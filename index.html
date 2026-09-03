@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Schoo — Notes & Assignments</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside id="sidebar">
+    <div class="brand">
+      <span class="brand-mark">Schoo</span>
+    </div>
+
+    <nav class="nav-list">
+      <button class="nav-item" id="homeNavBtn" data-view="home">
+        <span class="nav-dot home-dot"></span> Home
+      </button>
+      <div id="classNavList"></div>
+    </nav>
+
+    <button id="addClassBtn" class="add-class-btn">+ Add a class</button>
+
+    <div class="sidebar-footer">Your notes stay on this device.</div>
+  </aside>
+
+  <!-- ============ MAIN CONTENT ============ -->
+  <main id="content">
+    <!-- rendered dynamically by script.js -->
+  </main>
+
+</div>
+
+<!-- ============ MODAL OVERLAY (Add Class / Day popup / Add Event / Add Todo) ============ -->
+<div id="modalOverlay" class="modal-overlay hidden">
+  <div id="modalBody" class="modal-body"></div>
+</div>
+
+<!-- ============ RIGHT-CLICK CONTEXT MENU (delete todo) ============ -->
+<div id="contextMenu" class="context-menu hidden">
+  <button id="ctxDelete">🗑 Delete task</button>
+</div>
+
+<script src="script.js"></script>
+</body>
+</html>
