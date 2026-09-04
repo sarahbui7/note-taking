@@ -12,7 +12,7 @@ const DOW_LABELS  = ['S','M','T','W','T','F','S'];
    STATE
    --------------------------------------------------------- */
 function defaultState(){
-  return { classes: [], todos: [], events: [], notes: [], settings: { notesCalSide: 'right' } };
+  return { classes: [], todos: [], events: [], notes: [], settings: { notesCalSide: 'right', notesLineHeight: '1.6', notesParaSpacing: 'md' } };
 }
 let state = defaultState(); // replaced with real data once signed in
 
@@ -21,6 +21,7 @@ let ui = {
   view: 'home',        // 'home' | 'class'
   classId: null,
   collapsed: {},        // classId -> bool (todo panel collapsed)
+  miniCalCollapsed: {},  // classId -> bool (mini-calendar collapsed)
   homeCal: currentMonthCursor(),
   classCal: {},          // classId -> {year,month}
   notesDate: {},         // classId -> 'YYYY-MM-DD'
@@ -34,20 +35,41 @@ let ui = {
 const db = firebase.firestore();
 let currentUser = null;
 let unsubscribeSnapshot = null;
-let authMode = 'signin'; // 'signin' | 'signup'
 
 function userDocRef(uid){ return db.collection('users').doc(uid); }
+
+function normalizeClass(c){
+  // Migrates classes saved under the old fixed-field shape (website/discord/
+  // lectureInfo/days) into the new flexible links[] / meetings[] arrays.
+  if(!c.links){
+    c.links = [];
+    if(c.website) c.links.push({ label: 'Website', url: c.website });
+    if(c.discord) c.links.push({ label: 'Discord', url: c.discord });
+  }
+  if(!c.meetings){
+    c.meetings = [];
+    if(c.days && c.days.some(Boolean)){
+      c.meetings.push({ label: c.lectureInfo || 'Class', days: c.days, time: '' });
+    }
+  }
+  return c;
+}
+
+function normalizeTodo(t){
+  if(!t.links){ t.links = t.link ? [t.link] : []; }
+  return t;
+}
 
 function attachFirestoreListener(uid){
   unsubscribeSnapshot = userDocRef(uid).onSnapshot(async snap => {
     if(snap.exists){
       const data = snap.data();
       state = {
-        classes: data.classes || [],
-        todos: data.todos || [],
+        classes: (data.classes || []).map(normalizeClass),
+        todos: (data.todos || []).map(normalizeTodo),
         events: data.events || [],
         notes: data.notes || [],
-        settings: data.settings || { notesCalSide: 'right' },
+        settings: Object.assign({ notesCalSide: 'right', notesLineHeight: '1.6', notesParaSpacing: 'md' }, data.settings || {}),
       };
     } else {
       state = defaultState();
@@ -68,13 +90,11 @@ function saveState(){
 
 function friendlyAuthError(err){
   const map = {
-    'auth/invalid-email': 'That email address looks invalid.',
-    'auth/user-not-found': 'No account with that email — try creating one.',
-    'auth/wrong-password': 'Incorrect password.',
-    'auth/invalid-credential': 'Incorrect email or password.',
-    'auth/email-already-in-use': 'An account with that email already exists — try signing in instead.',
-    'auth/weak-password': 'Password should be at least 6 characters.',
+    'auth/popup-closed-by-user': 'Sign-in was closed before finishing — try again.',
+    'auth/popup-blocked': 'Your browser blocked the sign-in popup — allow popups for this site and try again.',
+    'auth/cancelled-popup-request': 'Sign-in was cancelled — try again.',
     'auth/api-key-not-valid.-please-pass-a-valid-api-key.': 'Firebase isn\'t configured yet — check firebase-config.js.',
+    'auth/operation-not-allowed': 'Google sign-in isn\'t enabled yet — enable it in the Firebase console under Authentication > Sign-in method.',
   };
   return map[err.code] || err.message;
 }
@@ -84,7 +104,7 @@ firebase.auth().onAuthStateChanged(user => {
     currentUser = user;
     document.getElementById('authScreen').classList.add('hidden');
     document.getElementById('app').classList.remove('hidden');
-    document.getElementById('userEmailLabel').textContent = user.email;
+    document.getElementById('userEmailLabel').textContent = user.email || user.displayName || '';
     attachFirestoreListener(user.uid);
   } else {
     currentUser = null;
@@ -95,37 +115,15 @@ firebase.auth().onAuthStateChanged(user => {
   }
 });
 
-document.getElementById('authToggleMode').addEventListener('click', () => {
-  authMode = authMode === 'signin' ? 'signup' : 'signin';
-  document.getElementById('authSubmitBtn').textContent = authMode === 'signin' ? 'Sign in' : 'Create account';
-  document.getElementById('authSub').textContent = authMode === 'signin'
-    ? 'Sign in to sync your notes across every device.'
-    : 'Create an account to start syncing across your devices.';
-  document.getElementById('authToggleMode').textContent = authMode === 'signin'
-    ? 'Need an account? Create one'
-    : 'Already have an account? Sign in';
-  document.getElementById('authError').classList.add('hidden');
-});
-
-document.getElementById('authForm').addEventListener('submit', async e => {
-  e.preventDefault();
-  const email = document.getElementById('authEmail').value.trim();
-  const password = document.getElementById('authPassword').value;
+document.getElementById('googleSignInBtn').addEventListener('click', async () => {
   const errEl = document.getElementById('authError');
-  const submitBtn = document.getElementById('authSubmitBtn');
   errEl.classList.add('hidden');
-  submitBtn.disabled = true;
   try{
-    if(authMode === 'signin'){
-      await firebase.auth().signInWithEmailAndPassword(email, password);
-    } else {
-      await firebase.auth().createUserWithEmailAndPassword(email, password);
-    }
+    const provider = new firebase.auth.GoogleAuthProvider();
+    await firebase.auth().signInWithPopup(provider);
   }catch(err){
     errEl.textContent = friendlyAuthError(err);
     errEl.classList.remove('hidden');
-  } finally {
-    submitBtn.disabled = false;
   }
 });
 
@@ -160,7 +158,7 @@ function todosDueOn(dateStr){ return state.todos.filter(t => t.dueDate === dateS
 function eventsOn(dateStr){ return state.events.filter(e => e.date === dateStr); }
 function classesMeetingOn(dateStr){
   const weekday = parseDateStr(dateStr).getDay();
-  return state.classes.filter(c => c.days && c.days[weekday]);
+  return state.classes.filter(c => (c.meetings||[]).some(m => m.days && m.days[weekday]));
 }
 
 /* =========================================================
@@ -235,9 +233,9 @@ function commitNewClass(name){
   const trimmed = (name||'').trim();
   if(trimmed){
     const newClass = {
-      id: uid(), name: trimmed, subtitle:'', lectureInfo:'', website:'', discord:'',
+      id: uid(), name: trimmed, subtitle:'',
+      links: [], meetings: [],
       color: CLASS_COLOR_PALETTE[state.classes.length % CLASS_COLOR_PALETTE.length],
-      days: [false,false,false,false,false,false,false]
     };
     state.classes.push(newClass);
     saveState();
@@ -307,7 +305,12 @@ function renderHome(){
         <div class="today-col">
           <h4>Classes today</h4>
           <div class="today-list">
-            ${classesToday.length===0 ? `<div class="empty-note">No classes marked for today.</div>` : classesToday.map(c => `<div class="row">🎓 ${escapeHtml(c.name)} ${c.lectureInfo?`<span class="row-tag">— ${escapeHtml(c.lectureInfo)}</span>`:''}</div>`).join('')}
+            ${classesToday.length===0 ? `<div class="empty-note">No classes marked for today.</div>` : classesToday.map(c => {
+              const weekday = parseDateStr(today).getDay();
+              const todaysMeetings = (c.meetings||[]).filter(m => m.days && m.days[weekday]);
+              const label = todaysMeetings.map(m => `${escapeHtml(m.label||'Class')}${m.time?' '+escapeHtml(m.time):''}`).join(', ');
+              return `<div class="row">🎓 ${escapeHtml(c.name)} ${label?`<span class="row-tag">— ${label}</span>`:''}</div>`;
+            }).join('')}
           </div>
         </div>
       </div>
@@ -350,8 +353,14 @@ function renderClass(classId){
   if(!ui.notesDate[classId]) ui.notesDate[classId] = todayStr();
 
   const collapsed = !!ui.collapsed[classId];
+  const miniCollapsed = !!ui.miniCalCollapsed[classId];
   const todos = classTodos(classId).sort((a,b) => (a.dueDate||'9999').localeCompare(b.dueDate||'9999'));
   const side = (state.settings.notesCalSide === 'left') ? 'flip' : '';
+  const links = c.links || [];
+  const meetings = c.meetings || [];
+  const lineHeight = state.settings.notesLineHeight || '1.6';
+  const paraSpacing = state.settings.notesParaSpacing || 'md';
+  const note = findNote(classId, ui.notesDate[classId]);
 
   content.innerHTML = `
     <div class="page-header">
@@ -360,15 +369,15 @@ function renderClass(classId){
         <button class="btn small ghost" style="color:#f5eefb;border-color:rgba(255,255,255,0.3);" data-action="edit-class" data-id="${classId}">⚙ Edit details</button>
       </div>
       <div class="sub">
-        ${c.subtitle ? escapeHtml(c.subtitle)+' · ' : ''}${c.lectureInfo ? escapeHtml(c.lectureInfo) : ''}
-        ${c.website ? ` · <a href="${escapeHtml(c.website)}" target="_blank" rel="noopener">Website</a>`:''}
-        ${c.discord ? ` · <a href="${escapeHtml(c.discord)}" target="_blank" rel="noopener">Discord</a>`:''}
-        ${!c.subtitle && !c.lectureInfo && !c.website && !c.discord ? `<span style="opacity:.7;">No details yet — click "Edit details" to add lecture times, meeting days, and links.</span>` : ''}
+        ${c.subtitle ? escapeHtml(c.subtitle) : ''}
+        ${meetings.map(m => ` · ${escapeHtml(m.label||'Class')}${m.time?' '+escapeHtml(m.time):''} (${daysShort(m.days)})`).join('')}
+        ${links.map(l => ` · <a href="${escapeHtml(l.url)}" target="_blank" rel="noopener">${escapeHtml(l.label||'Link')}</a>`).join('')}
+        ${!c.subtitle && meetings.length===0 && links.length===0 ? `<span style="opacity:.7;">No details yet — click "Edit details" to add meeting times and links.</span>` : ''}
       </div>
     </div>
 
-    <!-- STICKY COLLAPSIBLE TODO -->
-    <section class="panel sticky-todo ${collapsed?'collapsed':''}" id="classTodoPanel">
+    <!-- COLLAPSIBLE TODO (sits normally at the top, does not follow scroll) -->
+    <section class="panel todo-panel ${collapsed?'collapsed':''}" id="classTodoPanel">
       <div class="panel-header">
         <h3>To-do for ${escapeHtml(c.name)}</h3>
         <button class="icon-btn" data-action="toggle-collapse" data-id="${classId}">${collapsed ? '▸ Expand' : '▾ Collapse'}</button>
@@ -376,9 +385,11 @@ function renderClass(classId){
       <form class="todo-add-row" id="classTodoForm">
         <input class="t-text" type="text" name="text" placeholder="Assignment name..." required>
         <input class="t-date" type="date" name="dueDate">
-        <input class="t-link" type="url" name="link" placeholder="Link (optional)">
-        <button class="btn gold" type="submit">Add</button>
       </form>
+      <div class="link-inputs-wrap">
+        ${linkInputsHtml('classTodoLinks', [''])}
+      </div>
+      <button class="btn gold todo-add-btn" type="submit" form="classTodoForm">Add</button>
       <div class="todo-list">
         ${todos.length ? todos.map(t => todoItemHtml(t,false)).join('') : `<div class="empty-note">No assignments yet — add one above.</div>`}
       </div>
@@ -402,33 +413,59 @@ function renderClass(classId){
             <button type="button" title="Underline" data-cmd="underline"><u>U</u></button>
             <button type="button" title="Bullet list" data-cmd="insertUnorderedList">• ―</button>
             <button type="button" title="Numbered list" data-cmd="insertOrderedList">1. ―</button>
+            <span class="toolbar-sep"></span>
+            <select id="fontSizeSelect" class="toolbar-select" title="Font size">
+              <option value="2">Small</option>
+              <option value="3" selected>Normal</option>
+              <option value="4">Medium</option>
+              <option value="5">Large</option>
+              <option value="6">X-Large</option>
+            </select>
+            <select id="lineHeightSelect" class="toolbar-select" title="Line spacing">
+              <option value="1.3" ${lineHeight==='1.3'?'selected':''}>Spacing 1.0</option>
+              <option value="1.6" ${lineHeight==='1.6'?'selected':''}>Spacing 1.15</option>
+              <option value="2.0" ${lineHeight==='2.0'?'selected':''}>Spacing 1.5</option>
+              <option value="2.4" ${lineHeight==='2.4'?'selected':''}>Spacing 2.0</option>
+            </select>
+            <select id="paraSpacingSelect" class="toolbar-select" title="Space between paragraphs">
+              <option value="none" ${paraSpacing==='none'?'selected':''}>No para. spacing</option>
+              <option value="sm" ${paraSpacing==='sm'?'selected':''}>Small para. spacing</option>
+              <option value="md" ${paraSpacing==='md'?'selected':''}>Medium para. spacing</option>
+              <option value="lg" ${paraSpacing==='lg'?'selected':''}>Large para. spacing</option>
+            </select>
           </div>
-          <div class="notes-editable" id="notesEditable" contenteditable="true" data-placeholder="Start typing today's notes...">${(findNote(classId, ui.notesDate[classId])||{}).html || ''}</div>
+          <div class="notes-editable ps-${paraSpacing}" id="notesEditable" contenteditable="true"
+               style="line-height:${lineHeight};" data-placeholder="Start typing today's notes... (Tab to indent bullet/number levels)">${note ? note.html : ''}</div>
           <div class="autosave-tag" id="autosaveTag">saved</div>
         </div>
-        <div class="notes-side">
+        <div class="notes-side ${miniCollapsed?'collapsed':''}" id="notesSidePanel">
           <div class="panel-header">
-            <h3 style="font-size:14px;">Jump to a date</h3>
-            <div class="cal-nav">
-              <button class="icon-btn" data-action="mini-cal-prev" data-classid="${classId}">←</button>
-              <span style="font-size:12.5px;font-weight:600;">${MONTH_NAMES[ui.classCal[classId].month]} ${ui.classCal[classId].year}</span>
-              <button class="icon-btn" data-action="mini-cal-next" data-classid="${classId}">→</button>
-            </div>
+            <button class="icon-btn mini-collapse-btn" title="${miniCollapsed?'Expand calendar':'Collapse calendar'}" data-action="toggle-minical" data-id="${classId}">${miniCollapsed?'◂':'▸'}</button>
+            ${!miniCollapsed ? `
+              <h3 style="font-size:14px;">Jump to a date</h3>
+              <div class="cal-nav">
+                <button class="icon-btn" data-action="mini-cal-prev" data-classid="${classId}">←</button>
+                <span style="font-size:12.5px;font-weight:600;">${MONTH_NAMES[ui.classCal[classId].month]} ${ui.classCal[classId].year}</span>
+                <button class="icon-btn" data-action="mini-cal-next" data-classid="${classId}">→</button>
+              </div>` : ''}
           </div>
-          <div id="miniCalWrap" class="mini-cal">
+          ${!miniCollapsed ? `<div id="miniCalWrap" class="mini-cal">
             ${calendarHtml(ui.classCal[classId].year, ui.classCal[classId].month, { small:true, todayStr: todayStr(), selected: ui.notesDate[classId], classId })}
-          </div>
+          </div>` : ''}
         </div>
       </div>
     </section>
   `;
+
+  wireLinkInputs('classTodoLinks');
 
   document.getElementById('classTodoForm').addEventListener('submit', e => {
     e.preventDefault();
     const fd = new FormData(e.target);
     const text = fd.get('text').trim();
     if(!text) return;
-    state.todos.push({ id: uid(), classId, text, dueDate: fd.get('dueDate')||'', link: fd.get('link')||'', done:false });
+    const links = collectLinkInputs('classTodoLinks');
+    state.todos.push({ id: uid(), classId, text, dueDate: fd.get('dueDate')||'', links, done:false });
     saveState();
     render();
   });
@@ -439,17 +476,65 @@ function renderClass(classId){
     renderClass(classId); // safe to fully re-render on explicit date change
   });
 
-  // toolbar formatting commands
+  const editable = document.getElementById('notesEditable');
+
+  // toolbar formatting commands (bold/italic/underline/lists)
   document.querySelectorAll('.toolbar [data-cmd]').forEach(btn => {
-    btn.addEventListener('mousedown', e => e.preventDefault()); // keep focus/selection in editor
+    btn.addEventListener('mousedown', e => e.preventDefault()); // keep selection alive
     btn.addEventListener('click', () => {
       document.execCommand(btn.dataset.cmd, false, null);
-      document.getElementById('notesEditable').focus();
+      editable.focus();
     });
   });
 
+  // remember the text selection so the font-size dropdown (which steals focus)
+  // can still apply to whatever was selected
+  let savedRange = null;
+  const saveSelection = () => {
+    const sel = window.getSelection();
+    if(sel.rangeCount > 0 && editable.contains(sel.anchorNode)) savedRange = sel.getRangeAt(0).cloneRange();
+  };
+  editable.addEventListener('mouseup', saveSelection);
+  editable.addEventListener('keyup', saveSelection);
+
+  document.getElementById('fontSizeSelect').addEventListener('change', e => {
+    if(savedRange){
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(savedRange);
+    }
+    document.execCommand('fontSize', false, e.target.value);
+    editable.focus();
+    e.target.value = '3'; // reset — this is "apply size to selection", not a persistent state
+  });
+
+  document.getElementById('lineHeightSelect').addEventListener('change', e => {
+    editable.style.lineHeight = e.target.value;
+    state.settings.notesLineHeight = e.target.value;
+    saveState();
+  });
+
+  document.getElementById('paraSpacingSelect').addEventListener('change', e => {
+    editable.className = `notes-editable ps-${e.target.value}`;
+    state.settings.notesParaSpacing = e.target.value;
+    saveState();
+  });
+
+  // Tab / Shift+Tab: indent or outdent list levels (nested bullets get a
+  // different marker automatically via CSS, per depth). Outside a list, Tab
+  // just inserts an indent instead of jumping focus out of the editor.
+  editable.addEventListener('keydown', e => {
+    if(e.key !== 'Tab') return;
+    e.preventDefault();
+    const inList = document.queryCommandState('insertUnorderedList') || document.queryCommandState('insertOrderedList');
+    if(inList){
+      document.execCommand(e.shiftKey ? 'outdent' : 'indent');
+    } else if(!e.shiftKey){
+      document.execCommand('insertText', false, '\u00A0\u00A0\u00A0\u00A0');
+    }
+  });
+
   // notes autosave (debounced), does NOT trigger full re-render
-  const editable = document.getElementById('notesEditable');
   let saveTimer = null;
   editable.addEventListener('input', () => {
     const tag = document.getElementById('autosaveTag');
@@ -457,14 +542,20 @@ function renderClass(classId){
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       const dateStr = ui.notesDate[classId];
-      let note = findNote(classId, dateStr);
-      if(!note){ note = { id: uid(), classId, date: dateStr, html: '' }; state.notes.push(note); }
-      note.html = editable.innerHTML;
+      let n = findNote(classId, dateStr);
+      if(!n){ n = { id: uid(), classId, date: dateStr, html: '' }; state.notes.push(n); }
+      n.html = editable.innerHTML;
       saveState();
       tag.textContent = 'saved ✓';
       refreshMiniCal(classId);
     }, 500);
   });
+}
+
+function daysShort(days){
+  if(!days) return '';
+  const labels = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  return days.map((v,i)=>v?labels[i]:null).filter(Boolean).join('/');
 }
 
 function refreshMiniCal(classId){
@@ -478,19 +569,64 @@ function refreshMiniCal(classId){
    ========================================================= */
 function todoItemHtml(t, showClassTag){
   const cls = t.classId ? getClass(t.classId) : null;
+  const links = t.links && t.links.length ? t.links : (t.link ? [t.link] : []);
   return `
-    <div class="todo-item ${t.done?'done':''}" data-id="${t.id}" data-action-context="todo">
+    <div class="todo-item ${t.done?'done':''}" data-id="${t.id}">
       <button class="check-btn" data-action="toggle-todo" data-id="${t.id}">✓</button>
       <div class="t-body">
         <div class="t-text">${escapeHtml(t.text)}</div>
         <div class="t-meta">
           ${t.dueDate ? `<span>Due ${niceDate(t.dueDate)}</span>` : ''}
-          ${t.link ? `<a href="${escapeHtml(t.link)}" target="_blank" rel="noopener">Open link ↗</a>` : ''}
+          ${links.map((l,i) => `<a href="${escapeHtml(l)}" target="_blank" rel="noopener">${links.length>1 ? `Link ${i+1}` : 'Open link'} ↗</a>`).join('')}
           ${showClassTag && cls ? `<span class="t-class-tag">${escapeHtml(cls.name)}</span>` : ''}
         </div>
       </div>
     </div>
   `;
+}
+
+/* =========================================================
+   REUSABLE: dynamic "add another..." input lists
+   used for todo links, class links, and class meeting times
+   ========================================================= */
+function linkInputsHtml(containerId, values){
+  values = (values && values.length) ? values : [''];
+  return `
+    <div class="link-inputs" id="${containerId}">
+      ${values.map(v => `<div class="link-input-row">
+        <input class="t-link" type="url" value="${escapeHtml(v)}" placeholder="https://...">
+        <button type="button" class="icon-btn remove-row-btn">✕</button>
+      </div>`).join('')}
+    </div>
+    <button type="button" class="btn small ghost add-link-btn" data-target="${containerId}">+ Add another link</button>
+  `;
+}
+
+function wireLinkInputs(containerId){
+  const container = document.getElementById(containerId);
+  if(!container) return;
+  const addBtn = document.querySelector(`.add-link-btn[data-target="${containerId}"]`);
+  const wireRemove = row => {
+    const btn = row.querySelector('.remove-row-btn');
+    if(btn) btn.addEventListener('click', () => row.remove());
+  };
+  container.querySelectorAll('.link-input-row').forEach(wireRemove);
+  if(addBtn){
+    addBtn.addEventListener('click', () => {
+      const row = document.createElement('div');
+      row.className = 'link-input-row';
+      row.innerHTML = `<input class="t-link" type="url" placeholder="https://..."><button type="button" class="icon-btn remove-row-btn">✕</button>`;
+      container.appendChild(row);
+      wireRemove(row);
+      row.querySelector('input').focus();
+    });
+  }
+}
+
+function collectLinkInputs(containerId){
+  return Array.from(document.querySelectorAll(`#${containerId} .t-link`))
+    .map(inp => inp.value.trim())
+    .filter(Boolean);
 }
 
 /* =========================================================
@@ -577,10 +713,15 @@ function openDayModal(dateStr){
     <div class="day-modal-section">
       <h4>Classes meeting</h4>
       <div class="day-modal-list">
-        ${classesOn.length ? classesOn.map(c => `<div class="row" style="background:#faf8fc;border:1px solid #ede6f2;border-radius:10px;padding:8px 10px;">
-          🎓 ${escapeHtml(c.name)}
+        ${classesOn.length ? classesOn.map(c => {
+          const weekday = parseDateStr(dateStr).getDay();
+          const todaysMeetings = (c.meetings||[]).filter(m => m.days && m.days[weekday]);
+          const label = todaysMeetings.map(m => `${escapeHtml(m.label||'Class')}${m.time?' '+escapeHtml(m.time):''}`).join(', ');
+          return `<div class="row" style="background:#faf8fc;border:1px solid #ede6f2;border-radius:10px;padding:8px 10px;">
+          🎓 ${escapeHtml(c.name)} ${label?`<span class="row-tag">— ${label}</span>`:''}
           <button class="btn small ghost" style="float:right;" data-action="go-class-notes" data-id="${c.id}" data-date="${dateStr}">Open notes</button>
-        </div>`).join('') : `<div class="empty-note">No classes meet this day.</div>`}
+        </div>`;
+        }).join('') : `<div class="empty-note">No classes meet this day.</div>`}
       </div>
     </div>
 
@@ -592,12 +733,18 @@ function openDayModal(dateStr){
 
 /* =========================================================
    EDIT CLASS DETAILS MODAL
-   (creation itself now happens inline in the sidebar — this
-   modal is only for filling in the extra details afterward)
+   (creation itself happens inline in the sidebar — this modal
+   is for filling in subtitle, meeting times, and links)
    ========================================================= */
 function openEditClassModal(classId){
   const c = getClass(classId);
   if(!c) return;
+
+  let editingLinks = (c.links||[]).map(l => ({...l}));
+  if(editingLinks.length === 0) editingLinks.push({ label:'', url:'' });
+  let editingMeetings = (c.meetings||[]).map(m => ({ ...m, days: [...(m.days||[false,false,false,false,false,false,false])] }));
+  if(editingMeetings.length === 0) editingMeetings.push({ label:'', days:[false,false,false,false,false,false,false], time:'' });
+
   showModal(`
     <h3>Edit class details</h3>
     <form id="editClassForm">
@@ -609,24 +756,19 @@ function openEditClassModal(classId){
         <label>Subtitle</label>
         <input type="text" name="subtitle" value="${escapeHtml(c.subtitle||'')}" placeholder="e.g. Embedded Systems I">
       </div>
+
       <div class="form-row">
-        <label>Lecture / lab info</label>
-        <input type="text" name="lectureInfo" value="${escapeHtml(c.lectureInfo||'')}" placeholder="e.g. TR 2:10–3:25, Lab W 12:05–2:00">
+        <label>Meeting times</label>
+        <div id="meetingsContainer"></div>
+        <button type="button" class="btn small ghost" id="addMeetingBtn">+ Add meeting time</button>
       </div>
+
       <div class="form-row">
-        <label>Meets on</label>
-        <div class="days-row" id="dayChips">
-          ${DOW_LABELS.map((l,i)=>`<button type="button" class="day-chip ${c.days && c.days[i] ? 'on':''}" data-day="${i}">${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][i]}</button>`).join('')}
-        </div>
+        <label>Links</label>
+        <div id="linksContainer"></div>
+        <button type="button" class="btn small ghost" id="addLinkBtn">+ Add another link</button>
       </div>
-      <div class="form-row">
-        <label>Website (optional)</label>
-        <input type="url" name="website" value="${escapeHtml(c.website||'')}" placeholder="https://...">
-      </div>
-      <div class="form-row">
-        <label>Discord (optional)</label>
-        <input type="url" name="discord" value="${escapeHtml(c.discord||'')}" placeholder="https://discord.gg/...">
-      </div>
+
       <div class="form-row">
         <label>Tab color</label>
         <input type="color" name="color" value="${c.color||'#e3a63f'}">
@@ -638,27 +780,118 @@ function openEditClassModal(classId){
     </form>
   `);
 
-  const selectedDays = new Set((c.days||[]).map((v,i)=>v?i:null).filter(v=>v!==null));
-  document.querySelectorAll('#dayChips .day-chip').forEach(chip => {
-    chip.addEventListener('click', () => {
-      const d = Number(chip.dataset.day);
-      if(selectedDays.has(d)){ selectedDays.delete(d); chip.classList.remove('on'); }
-      else { selectedDays.add(d); chip.classList.add('on'); }
-    });
+  function renderMeetingsRows(){
+    const container = document.getElementById('meetingsContainer');
+    container.innerHTML = editingMeetings.map((m,i) => `
+      <div class="builder-row">
+        <input type="text" class="meeting-label" data-idx="${i}" placeholder="e.g. Lecture, Lab" value="${escapeHtml(m.label||'')}">
+        <div class="days-row">
+          ${DOW_LABELS.map((l,d)=>`<button type="button" class="day-chip ${m.days[d]?'on':''}" data-idx="${i}" data-day="${d}">${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d]}</button>`).join('')}
+        </div>
+        <input type="time" class="meeting-time" data-idx="${i}" value="${escapeHtml(m.time||'')}">
+        <span class="weekly-tag">Weekly</span>
+        <button type="button" class="icon-btn remove-row-btn" data-idx="${i}" title="Remove">✕</button>
+      </div>
+    `).join('');
+    container.querySelectorAll('.meeting-label').forEach(inp => inp.addEventListener('input', () => { editingMeetings[Number(inp.dataset.idx)].label = inp.value; }));
+    container.querySelectorAll('.meeting-time').forEach(inp => inp.addEventListener('input', () => { editingMeetings[Number(inp.dataset.idx)].time = inp.value; }));
+    container.querySelectorAll('.day-chip').forEach(chip => chip.addEventListener('click', () => {
+      const i = Number(chip.dataset.idx), d = Number(chip.dataset.day);
+      editingMeetings[i].days[d] = !editingMeetings[i].days[d];
+      chip.classList.toggle('on');
+    }));
+    container.querySelectorAll('.remove-row-btn').forEach(btn => btn.addEventListener('click', () => {
+      editingMeetings.splice(Number(btn.dataset.idx), 1);
+      if(editingMeetings.length === 0) editingMeetings.push({ label:'', days:[false,false,false,false,false,false,false], time:'' });
+      renderMeetingsRows();
+    }));
+  }
+
+  function renderLinksRows(){
+    const container = document.getElementById('linksContainer');
+    container.innerHTML = editingLinks.map((l,i) => `
+      <div class="builder-row">
+        <input type="text" class="link-label" data-idx="${i}" placeholder="e.g. Website, Discord" value="${escapeHtml(l.label||'')}">
+        <input type="url" class="link-url" data-idx="${i}" placeholder="https://..." value="${escapeHtml(l.url||'')}">
+        <button type="button" class="icon-btn remove-row-btn" data-idx="${i}" title="Remove">✕</button>
+      </div>
+    `).join('');
+    container.querySelectorAll('.link-label').forEach(inp => inp.addEventListener('input', () => { editingLinks[Number(inp.dataset.idx)].label = inp.value; }));
+    container.querySelectorAll('.link-url').forEach(inp => inp.addEventListener('input', () => { editingLinks[Number(inp.dataset.idx)].url = inp.value; }));
+    container.querySelectorAll('.remove-row-btn').forEach(btn => btn.addEventListener('click', () => {
+      editingLinks.splice(Number(btn.dataset.idx), 1);
+      if(editingLinks.length === 0) editingLinks.push({ label:'', url:'' });
+      renderLinksRows();
+    }));
+  }
+
+  renderMeetingsRows();
+  renderLinksRows();
+  document.getElementById('addMeetingBtn').addEventListener('click', () => {
+    editingMeetings.push({ label:'', days:[false,false,false,false,false,false,false], time:'' });
+    renderMeetingsRows();
+  });
+  document.getElementById('addLinkBtn').addEventListener('click', () => {
+    editingLinks.push({ label:'', url:'' });
+    renderLinksRows();
   });
 
   document.getElementById('editClassForm').addEventListener('submit', e => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    const days = [false,false,false,false,false,false,false];
-    selectedDays.forEach(d => days[d] = true);
     c.name = fd.get('name').trim() || c.name;
     c.subtitle = fd.get('subtitle').trim();
-    c.lectureInfo = fd.get('lectureInfo').trim();
-    c.website = fd.get('website').trim();
-    c.discord = fd.get('discord').trim();
     c.color = fd.get('color');
-    c.days = days;
+    c.meetings = editingMeetings
+      .filter(m => (m.label && m.label.trim()) || m.days.some(Boolean) || m.time)
+      .map(m => ({ label: (m.label||'').trim(), days: m.days, time: m.time||'' }));
+    c.links = editingLinks
+      .filter(l => l.url && l.url.trim())
+      .map(l => ({ label: (l.label||'').trim() || 'Link', url: l.url.trim() }));
+    saveState();
+    closeModal();
+    render();
+  });
+}
+
+/* =========================================================
+   EDIT TODO MODAL
+   ========================================================= */
+function openEditTodoModal(todoId){
+  const t = state.todos.find(x => x.id === todoId);
+  if(!t) return;
+  const links = (t.links && t.links.length) ? t.links : (t.link ? [t.link] : []);
+
+  showModal(`
+    <h3>Edit task</h3>
+    <form id="editTodoForm">
+      <div class="form-row">
+        <label>Assignment name</label>
+        <input type="text" name="text" value="${escapeHtml(t.text)}" required>
+      </div>
+      <div class="form-row">
+        <label>Due date</label>
+        <input type="date" name="dueDate" value="${t.dueDate||''}">
+      </div>
+      <div class="form-row">
+        <label>Links</label>
+        ${linkInputsHtml('editTodoLinks', links)}
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" data-action="close-modal">Cancel</button>
+        <button type="submit" class="btn gold">Save</button>
+      </div>
+    </form>
+  `);
+
+  wireLinkInputs('editTodoLinks');
+
+  document.getElementById('editTodoForm').addEventListener('submit', e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    t.text = fd.get('text').trim() || t.text;
+    t.dueDate = fd.get('dueDate') || '';
+    t.links = collectLinkInputs('editTodoLinks');
     saveState();
     closeModal();
     render();
@@ -707,17 +940,21 @@ function closeModal(){
   document.getElementById('modalOverlay').classList.add('hidden');
 }
 
-let pendingDeleteTodoId = null;
+let pendingTodoId = null;
 function showContextMenu(x, y, todoId){
-  pendingDeleteTodoId = todoId;
+  pendingTodoId = todoId;
   const menu = document.getElementById('contextMenu');
-  menu.style.left = x+'px';
-  menu.style.top = y+'px';
   menu.classList.remove('hidden');
+  // clamp so the menu never renders off-screen (matters most on mobile)
+  const rect = menu.getBoundingClientRect();
+  const maxX = window.innerWidth - rect.width - 8;
+  const maxY = window.innerHeight - rect.height - 8;
+  menu.style.left = Math.max(8, Math.min(x, maxX)) + 'px';
+  menu.style.top = Math.max(8, Math.min(y, maxY)) + 'px';
 }
 function hideContextMenu(){
   document.getElementById('contextMenu').classList.add('hidden');
-  pendingDeleteTodoId = null;
+  pendingTodoId = null;
 }
 
 /* =========================================================
@@ -769,6 +1006,11 @@ document.addEventListener('click', e => {
     case 'toggle-collapse':
       ui.collapsed[el.dataset.id] = !ui.collapsed[el.dataset.id];
       render();
+      break;
+
+    case 'toggle-minical':
+      ui.miniCalCollapsed[el.dataset.id] = !ui.miniCalCollapsed[el.dataset.id];
+      renderClass(el.dataset.id);
       break;
 
     case 'open-add-event': openAddEventModal(); break;
@@ -832,7 +1074,7 @@ document.addEventListener('click', e => {
   }
 });
 
-// right-click on a class tab -> rename it inline; right-click on a todo item -> delete menu
+// right-click on a class tab -> rename it inline; right-click on a todo item -> edit/delete menu
 document.addEventListener('contextmenu', e => {
   const classRow = e.target.closest('.class-nav-row');
   if(classRow && classRow.dataset.id){
@@ -846,6 +1088,25 @@ document.addEventListener('contextmenu', e => {
     e.preventDefault();
     showContextMenu(e.pageX, e.pageY, item.dataset.id);
   }
+});
+
+// long-press on a todo item -> same edit/delete menu, for mobile/touch
+let longPressTimer = null;
+let longPressFired = false;
+document.addEventListener('touchstart', e => {
+  const item = e.target.closest('.todo-item');
+  if(!item) return;
+  const touch = e.touches[0];
+  longPressFired = false;
+  longPressTimer = setTimeout(() => {
+    longPressFired = true;
+    showContextMenu(touch.pageX, touch.pageY, item.dataset.id);
+  }, 500);
+}, { passive: true });
+document.addEventListener('touchmove', () => clearTimeout(longPressTimer));
+document.addEventListener('touchend', e => {
+  clearTimeout(longPressTimer);
+  if(longPressFired){ e.preventDefault(); longPressFired = false; } // swallow the click that follows the long-press
 });
 
 // drag-and-drop reordering of class tabs
@@ -878,9 +1139,14 @@ document.addEventListener('drop', e => {
     moveClass(draggedId, row.dataset.id);
   }
 });
+document.getElementById('ctxEdit').addEventListener('click', () => {
+  const id = pendingTodoId;
+  hideContextMenu();
+  if(id) openEditTodoModal(id);
+});
 document.getElementById('ctxDelete').addEventListener('click', () => {
-  if(pendingDeleteTodoId){
-    state.todos = state.todos.filter(t => t.id !== pendingDeleteTodoId);
+  if(pendingTodoId){
+    state.todos = state.todos.filter(t => t.id !== pendingTodoId);
     saveState();
   }
   hideContextMenu();

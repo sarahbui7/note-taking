@@ -76,6 +76,10 @@ a{ color: var(--gold); }
   background: var(--red-soft); color: var(--red);
   border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin-bottom: 12px;
 }
+.google-btn{
+  width:100%;
+  display:flex; align-items:center; justify-content:center; gap:10px;
+}
 .auth-toggle{
   display:block;
   background: transparent; border:none; color: var(--purple);
@@ -217,14 +221,11 @@ a{ color: var(--gold); }
 }
 .icon-btn:hover{ background: #f1ecf5; color: var(--text-dark); }
 
-/* ---------- Sticky collapsible todo panel (class page) ---------- */
-.sticky-todo{
-  position: sticky;
-  top: 18px;
-  z-index: 20;
-}
-.sticky-todo.collapsed .todo-list,
-.sticky-todo.collapsed .todo-add-row{ display:none; }
+/* ---------- Collapsible todo panel (class page) — sits normally, doesn't follow scroll ---------- */
+.todo-panel.collapsed .todo-list,
+.todo-panel.collapsed .todo-add-row,
+.todo-panel.collapsed .link-inputs-wrap,
+.todo-panel.collapsed .todo-add-btn{ display:none; }
 
 /* =========================================================
    TO-DO LIST
@@ -383,9 +384,19 @@ a{ color: var(--gold); }
   display:flex; gap: 24px; align-items:flex-start; flex-wrap: wrap;
 }
 .notes-main{ flex: 2.2; min-width: 320px; order: 1; }
-.notes-side{ flex: 1; min-width: 240px; order: 2; }
+.notes-side{
+  flex: 1; min-width: 240px; order: 2;
+  transition: flex-basis .18s ease, min-width .18s ease, max-width .18s ease;
+}
 .notes-layout.flip .notes-main{ order: 2; }
 .notes-layout.flip .notes-side{ order: 1; }
+
+/* collapsible mini-calendar: shrinks to a thin strip with just the toggle arrow */
+.notes-side.collapsed{
+  flex: 0 0 40px; min-width: 40px; max-width: 40px; overflow: hidden;
+}
+.notes-side .panel-header{ gap: 8px; }
+.mini-collapse-btn{ flex-shrink: 0; }
 
 .notes-date-row{
   display:flex; align-items:center; gap:10px; margin-bottom: 10px;
@@ -395,7 +406,7 @@ a{ color: var(--gold); }
 }
 
 .toolbar{
-  display:flex; gap:4px; margin-bottom:8px;
+  display:flex; gap:4px; margin-bottom:8px; flex-wrap: wrap; align-items:center;
   border-bottom: 1px solid #ede6f2;
   padding-bottom: 8px;
 }
@@ -404,6 +415,11 @@ a{ color: var(--gold); }
   width:32px; height:30px; font-size:14px; color: var(--text-dark);
 }
 .toolbar button:hover{ background:#f1ecf5; }
+.toolbar-sep{ width:1px; align-self:stretch; background:#ede6f2; margin:0 4px; }
+.toolbar-select{
+  border:1px solid #e4dcec; background:#fff; border-radius:7px;
+  height:30px; font-size:12.5px; color: var(--text-dark); padding: 0 6px;
+}
 
 .notes-editable{
   min-height: 280px;
@@ -411,13 +427,25 @@ a{ color: var(--gold); }
   border-radius: 12px;
   padding: 14px 16px;
   font-size: 14.5px;
-  line-height: 1.6;
   color: var(--text-dark);
   outline: none;
 }
 .notes-editable:focus{ border-color: var(--gold); }
-.notes-editable ul{ padding-left: 20px; }
-.notes-editable ol{ padding-left: 20px; }
+
+/* nested bullet/number lists get a different marker per depth (Tab to indent) */
+.notes-editable ul{ padding-left: 22px; list-style-type: disc; }
+.notes-editable ul ul{ list-style-type: circle; }
+.notes-editable ul ul ul{ list-style-type: square; }
+.notes-editable ol{ padding-left: 22px; list-style-type: decimal; }
+.notes-editable ol ol{ list-style-type: lower-alpha; }
+.notes-editable ol ol ol{ list-style-type: lower-roman; }
+
+/* paragraph spacing options — contenteditable wraps each line in a <div> in most browsers */
+.notes-editable.ps-none div, .notes-editable.ps-none p{ margin: 0; }
+.notes-editable.ps-sm div, .notes-editable.ps-sm p{ margin: 0 0 6px 0; }
+.notes-editable.ps-md div, .notes-editable.ps-md p{ margin: 0 0 12px 0; }
+.notes-editable.ps-lg div, .notes-editable.ps-lg p{ margin: 0 0 20px 0; }
+
 .notes-editable:empty:before{
   content: attr(data-placeholder);
   color: #b7abc2;
@@ -465,6 +493,31 @@ a{ color: var(--gold); }
 .day-chip.on{ background: var(--purple); color:#fff; border-color: var(--purple); }
 .modal-actions{ display:flex; justify-content:flex-end; gap:8px; margin-top: 18px; }
 
+/* dynamic "add another..." rows — used for todo links, class links, meeting times */
+.link-inputs{ display:flex; flex-direction:column; gap:8px; margin-bottom:8px; }
+.link-input-row{ display:flex; gap:6px; align-items:center; }
+.link-input-row input{
+  flex:1; border:1px solid #e4dcec; background:#faf8fc; border-radius:8px; padding:8px 10px; font-size:13.5px;
+}
+.link-inputs-wrap{ margin-bottom: 14px; }
+
+.builder-row{
+  display:flex; gap:8px; align-items:center; flex-wrap: wrap;
+  background:#faf8fc; border:1px solid #ede6f2; border-radius:10px;
+  padding:10px; margin-bottom:8px;
+}
+.builder-row input[type="text"],
+.builder-row input[type="url"]{
+  flex:1; min-width: 120px; border:1px solid #e4dcec; background:#fff; border-radius:8px; padding:7px 9px; font-size:13px;
+}
+.builder-row input[type="time"]{
+  border:1px solid #e4dcec; background:#fff; border-radius:8px; padding:7px 9px; font-size:13px;
+}
+.builder-row .days-row{ gap:4px; }
+.builder-row .day-chip{ padding:5px 7px; font-size:11px; }
+.weekly-tag{ font-size:11.5px; color: var(--text-dim); font-style: italic; }
+.remove-row-btn{ margin-left:auto; color: var(--red); }
+
 .day-modal-list{ display:flex; flex-direction:column; gap:8px; margin-bottom: 6px; }
 .day-modal-section h4{ font-size:12.5px; color: var(--text-dim); margin: 14px 0 6px 0; }
 
@@ -477,9 +530,11 @@ a{ color: var(--gold); }
 .context-menu.hidden{ display:none; }
 .context-menu button{
   width:100%; text-align:left; background:transparent; border:none;
-  padding: 8px 10px; border-radius:7px; font-size: 13px; color: var(--red);
+  padding: 8px 10px; border-radius:7px; font-size: 13px; color: var(--text-dark);
 }
-.context-menu button:hover{ background: var(--red-soft); }
+.context-menu button:hover{ background: #f1ecf5; }
+.context-menu #ctxDelete{ color: var(--red); }
+.context-menu #ctxDelete:hover{ background: var(--red-soft); }
 
 /* inline add/rename input in sidebar */
 .inline-edit-input{
