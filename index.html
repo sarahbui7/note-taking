@@ -3,19 +3,40 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Schoo — Notes & Assignments</title>
+<title>NoteTaking</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<div id="app">
+<!-- ============ SIGN IN / CREATE ACCOUNT ============ -->
+<div id="authScreen" class="auth-screen">
+  <div class="auth-card">
+    <div class="brand-mark" style="margin-bottom:6px;">NoteTaking</div>
+    <p class="auth-sub" id="authSub">Sign in to sync your notes across every device.</p>
+    <form id="authForm">
+      <div class="form-row">
+        <label>Email</label>
+        <input type="email" id="authEmail" autocomplete="username" required>
+      </div>
+      <div class="form-row">
+        <label>Password</label>
+        <input type="password" id="authPassword" autocomplete="current-password" minlength="6" required>
+      </div>
+      <div id="authError" class="auth-error hidden"></div>
+      <button type="submit" class="btn gold" id="authSubmitBtn" style="width:100%;">Sign in</button>
+    </form>
+    <button type="button" id="authToggleMode" class="auth-toggle">Need an account? Create one</button>
+  </div>
+</div>
+
+<div id="app" class="hidden">
 
   <!-- ============ SIDEBAR ============ -->
   <aside id="sidebar">
     <div class="brand">
-      <span class="brand-mark">Schoo</span>
+      <span class="brand-mark">NoteTaking</span>
     </div>
 
     <nav class="nav-list">
@@ -27,7 +48,10 @@
 
     <button id="addClassBtn" class="add-class-btn">+ Add a class</button>
 
-    <div class="sidebar-footer">Your notes stay on this device.</div>
+    <div class="sidebar-footer">
+      <div id="userEmailLabel"></div>
+      <button id="signOutBtn" class="auth-toggle" style="padding:0;">Sign out</button>
+    </div>
   </aside>
 
   <!-- ============ MAIN CONTENT ============ -->
@@ -47,6 +71,11 @@
   <button id="ctxDelete">🗑 Delete task</button>
 </div>
 
+<!-- ============ FIREBASE (fill in firebase-config.js with your project's keys) ============ -->
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script>
 <script src="script.js"></script>
 </body>
 </html>

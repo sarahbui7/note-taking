@@ -1,17 +1,20 @@
 /* =========================================================
-   SCHOO — app logic
-   Everything lives in localStorage under STORAGE_KEY, so all
-   your classes / to-dos / notes stay on this device between visits.
+   NOTETAKING — app logic
+   Data lives in Firestore under  users/{uid}  as one document,
+   so it syncs automatically across every device you sign into.
+   See firebase-config.js for the one-time setup you need to do.
    ========================================================= */
 
-const STORAGE_KEY = 'schoo_notes_app_v1';
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const DOW_LABELS  = ['S','M','T','W','T','F','S'];
 
 /* ---------------------------------------------------------
    STATE
    --------------------------------------------------------- */
-let state = loadState();
+function defaultState(){
+  return { classes: [], todos: [], events: [], notes: [], settings: { notesCalSide: 'right' } };
+}
+let state = defaultState(); // replaced with real data once signed in
 
 // transient UI state (not persisted)
 let ui = {
@@ -21,19 +24,112 @@ let ui = {
   homeCal: currentMonthCursor(),
   classCal: {},          // classId -> {year,month}
   notesDate: {},         // classId -> 'YYYY-MM-DD'
+  addingClass: false,    // sidebar inline "new class" input showing
+  renamingClassId: null, // sidebar inline rename input showing
 };
 
-function loadState(){
-  try{
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if(raw) return JSON.parse(raw);
-  }catch(e){ console.warn('Could not read saved data, starting fresh.', e); }
-  return { classes: [], todos: [], events: [], notes: [], settings: { notesCalSide: 'right' } };
+/* ---------------------------------------------------------
+   FIREBASE: AUTH + FIRESTORE SYNC
+   --------------------------------------------------------- */
+const db = firebase.firestore();
+let currentUser = null;
+let unsubscribeSnapshot = null;
+let authMode = 'signin'; // 'signin' | 'signup'
+
+function userDocRef(uid){ return db.collection('users').doc(uid); }
+
+function attachFirestoreListener(uid){
+  unsubscribeSnapshot = userDocRef(uid).onSnapshot(async snap => {
+    if(snap.exists){
+      const data = snap.data();
+      state = {
+        classes: data.classes || [],
+        todos: data.todos || [],
+        events: data.events || [],
+        notes: data.notes || [],
+        settings: data.settings || { notesCalSide: 'right' },
+      };
+    } else {
+      state = defaultState();
+      await userDocRef(uid).set(state);
+    }
+    // Don't yank the cursor out of the notes editor while someone is mid-sentence.
+    const typingInNotes = document.activeElement && document.activeElement.id === 'notesEditable';
+    if(!typingInNotes) render();
+  }, err => {
+    console.error('Sync error:', err);
+  });
 }
 
 function saveState(){
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  if(!currentUser) return;
+  userDocRef(currentUser.uid).set(state).catch(err => console.error('Save failed:', err));
 }
+
+function friendlyAuthError(err){
+  const map = {
+    'auth/invalid-email': 'That email address looks invalid.',
+    'auth/user-not-found': 'No account with that email — try creating one.',
+    'auth/wrong-password': 'Incorrect password.',
+    'auth/invalid-credential': 'Incorrect email or password.',
+    'auth/email-already-in-use': 'An account with that email already exists — try signing in instead.',
+    'auth/weak-password': 'Password should be at least 6 characters.',
+    'auth/api-key-not-valid.-please-pass-a-valid-api-key.': 'Firebase isn\'t configured yet — check firebase-config.js.',
+  };
+  return map[err.code] || err.message;
+}
+
+firebase.auth().onAuthStateChanged(user => {
+  if(user){
+    currentUser = user;
+    document.getElementById('authScreen').classList.add('hidden');
+    document.getElementById('app').classList.remove('hidden');
+    document.getElementById('userEmailLabel').textContent = user.email;
+    attachFirestoreListener(user.uid);
+  } else {
+    currentUser = null;
+    if(unsubscribeSnapshot){ unsubscribeSnapshot(); unsubscribeSnapshot = null; }
+    state = defaultState();
+    document.getElementById('app').classList.add('hidden');
+    document.getElementById('authScreen').classList.remove('hidden');
+  }
+});
+
+document.getElementById('authToggleMode').addEventListener('click', () => {
+  authMode = authMode === 'signin' ? 'signup' : 'signin';
+  document.getElementById('authSubmitBtn').textContent = authMode === 'signin' ? 'Sign in' : 'Create account';
+  document.getElementById('authSub').textContent = authMode === 'signin'
+    ? 'Sign in to sync your notes across every device.'
+    : 'Create an account to start syncing across your devices.';
+  document.getElementById('authToggleMode').textContent = authMode === 'signin'
+    ? 'Need an account? Create one'
+    : 'Already have an account? Sign in';
+  document.getElementById('authError').classList.add('hidden');
+});
+
+document.getElementById('authForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const email = document.getElementById('authEmail').value.trim();
+  const password = document.getElementById('authPassword').value;
+  const errEl = document.getElementById('authError');
+  const submitBtn = document.getElementById('authSubmitBtn');
+  errEl.classList.add('hidden');
+  submitBtn.disabled = true;
+  try{
+    if(authMode === 'signin'){
+      await firebase.auth().signInWithEmailAndPassword(email, password);
+    } else {
+      await firebase.auth().createUserWithEmailAndPassword(email, password);
+    }
+  }catch(err){
+    errEl.textContent = friendlyAuthError(err);
+    errEl.classList.remove('hidden');
+  } finally {
+    submitBtn.disabled = false;
+  }
+});
+
+document.getElementById('signOutBtn').addEventListener('click', () => firebase.auth().signOut());
 
 /* ---------------------------------------------------------
    DATE HELPERS
@@ -70,20 +166,96 @@ function classesMeetingOn(dateStr){
 /* =========================================================
    RENDER: SIDEBAR
    ========================================================= */
+const CLASS_COLOR_PALETTE = ['#e3a63f','#9c7fb3','#4c9a5b','#5b8fd1','#d1495b','#3fae9c'];
+
 function renderSidebar(){
   const list = document.getElementById('classNavList');
   const homeBtn = document.getElementById('homeNavBtn');
   homeBtn.classList.toggle('active', ui.view === 'home');
 
-  list.innerHTML = state.classes.map(c => `
-    <div class="class-nav-row">
+  let rowsHtml = state.classes.map(c => {
+    if(ui.renamingClassId === c.id){
+      return `<div class="class-nav-row" data-id="${c.id}">
+        <input type="text" class="inline-edit-input" id="renameInput" value="${escapeHtml(c.name)}">
+      </div>`;
+    }
+    return `<div class="class-nav-row" draggable="true" data-id="${c.id}">
       <button class="nav-item ${ui.view==='class' && ui.classId===c.id ? 'active':''}" data-action="go-class" data-id="${c.id}">
         <span class="nav-dot" style="background:${c.color||'#cdb9dc'}"></span>
         ${escapeHtml(c.name)}
       </button>
       <button class="class-nav-del" title="Delete class" data-action="delete-class" data-id="${c.id}">✕</button>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
+
+  if(ui.addingClass){
+    rowsHtml += `<div class="class-nav-row adding">
+      <input type="text" class="inline-edit-input" id="newClassInput" placeholder="Class name...">
+    </div>`;
+  }
+
+  list.innerHTML = rowsHtml;
+
+  const renameEl = document.getElementById('renameInput');
+  if(renameEl){
+    renameEl.focus(); renameEl.select();
+    renameEl.addEventListener('keydown', e => {
+      if(e.key === 'Enter'){ commitRename(); }
+      else if(e.key === 'Escape'){ ui.renamingClassId = null; render(); }
+    });
+    renameEl.addEventListener('blur', commitRename);
+  }
+
+  const newEl = document.getElementById('newClassInput');
+  if(newEl){
+    newEl.focus();
+    newEl.addEventListener('keydown', e => {
+      if(e.key === 'Enter'){ commitNewClass(newEl.value); }
+      else if(e.key === 'Escape'){ ui.addingClass = false; render(); }
+    });
+    newEl.addEventListener('blur', () => commitNewClass(newEl.value));
+  }
+}
+
+function commitRename(){
+  if(ui.renamingClassId === null) return; // already committed (guards double-fire from blur+Enter)
+  const id = ui.renamingClassId;
+  ui.renamingClassId = null;
+  const el = document.getElementById('renameInput');
+  const val = el ? el.value.trim() : '';
+  const c = getClass(id);
+  if(c && val) c.name = val;
+  saveState();
+  render();
+}
+
+function commitNewClass(name){
+  if(!ui.addingClass) return; // already committed (guards double-fire from blur+Enter)
+  ui.addingClass = false;
+  const trimmed = (name||'').trim();
+  if(trimmed){
+    const newClass = {
+      id: uid(), name: trimmed, subtitle:'', lectureInfo:'', website:'', discord:'',
+      color: CLASS_COLOR_PALETTE[state.classes.length % CLASS_COLOR_PALETTE.length],
+      days: [false,false,false,false,false,false,false]
+    };
+    state.classes.push(newClass);
+    saveState();
+    ui.view = 'class'; ui.classId = newClass.id;
+  }
+  render();
+}
+
+function moveClass(draggedId, targetId){
+  if(draggedId === targetId) return;
+  const draggedIdx = state.classes.findIndex(c => c.id === draggedId);
+  const targetIdx = state.classes.findIndex(c => c.id === targetId);
+  if(draggedIdx < 0 || targetIdx < 0) return;
+  const [item] = state.classes.splice(draggedIdx, 1);
+  const newTargetIdx = state.classes.findIndex(c => c.id === targetId);
+  state.classes.splice(newTargetIdx, 0, item);
+  saveState();
+  render();
 }
 
 /* =========================================================
@@ -183,11 +355,15 @@ function renderClass(classId){
 
   content.innerHTML = `
     <div class="page-header">
-      <h1>${escapeHtml(c.name)}</h1>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <h1>${escapeHtml(c.name)}</h1>
+        <button class="btn small ghost" style="color:#f5eefb;border-color:rgba(255,255,255,0.3);" data-action="edit-class" data-id="${classId}">⚙ Edit details</button>
+      </div>
       <div class="sub">
         ${c.subtitle ? escapeHtml(c.subtitle)+' · ' : ''}${c.lectureInfo ? escapeHtml(c.lectureInfo) : ''}
         ${c.website ? ` · <a href="${escapeHtml(c.website)}" target="_blank" rel="noopener">Website</a>`:''}
         ${c.discord ? ` · <a href="${escapeHtml(c.discord)}" target="_blank" rel="noopener">Discord</a>`:''}
+        ${!c.subtitle && !c.lectureInfo && !c.website && !c.discord ? `<span style="opacity:.7;">No details yet — click "Edit details" to add lecture times, meeting days, and links.</span>` : ''}
       </div>
     </div>
 
@@ -415,50 +591,54 @@ function openDayModal(dateStr){
 }
 
 /* =========================================================
-   ADD CLASS MODAL
+   EDIT CLASS DETAILS MODAL
+   (creation itself now happens inline in the sidebar — this
+   modal is only for filling in the extra details afterward)
    ========================================================= */
-function openAddClassModal(){
+function openEditClassModal(classId){
+  const c = getClass(classId);
+  if(!c) return;
   showModal(`
-    <h3>Add a class</h3>
-    <form id="addClassForm">
+    <h3>Edit class details</h3>
+    <form id="editClassForm">
       <div class="form-row">
         <label>Class name</label>
-        <input type="text" name="name" placeholder="e.g. CPRE 2880" required>
+        <input type="text" name="name" value="${escapeHtml(c.name)}" required>
       </div>
       <div class="form-row">
         <label>Subtitle</label>
-        <input type="text" name="subtitle" placeholder="e.g. Embedded Systems I">
+        <input type="text" name="subtitle" value="${escapeHtml(c.subtitle||'')}" placeholder="e.g. Embedded Systems I">
       </div>
       <div class="form-row">
         <label>Lecture / lab info</label>
-        <input type="text" name="lectureInfo" placeholder="e.g. TR 2:10–3:25, Lab W 12:05–2:00">
+        <input type="text" name="lectureInfo" value="${escapeHtml(c.lectureInfo||'')}" placeholder="e.g. TR 2:10–3:25, Lab W 12:05–2:00">
       </div>
       <div class="form-row">
         <label>Meets on</label>
         <div class="days-row" id="dayChips">
-          ${DOW_LABELS.map((l,i)=>`<button type="button" class="day-chip" data-day="${i}">${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][i]}</button>`).join('')}
+          ${DOW_LABELS.map((l,i)=>`<button type="button" class="day-chip ${c.days && c.days[i] ? 'on':''}" data-day="${i}">${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][i]}</button>`).join('')}
         </div>
       </div>
       <div class="form-row">
         <label>Website (optional)</label>
-        <input type="url" name="website" placeholder="https://...">
+        <input type="url" name="website" value="${escapeHtml(c.website||'')}" placeholder="https://...">
       </div>
       <div class="form-row">
         <label>Discord (optional)</label>
-        <input type="url" name="discord" placeholder="https://discord.gg/...">
+        <input type="url" name="discord" value="${escapeHtml(c.discord||'')}" placeholder="https://discord.gg/...">
       </div>
       <div class="form-row">
         <label>Tab color</label>
-        <input type="color" name="color" value="#e3a63f">
+        <input type="color" name="color" value="${c.color||'#e3a63f'}">
       </div>
       <div class="modal-actions">
         <button type="button" class="btn ghost" data-action="close-modal">Cancel</button>
-        <button type="submit" class="btn gold">Add class</button>
+        <button type="submit" class="btn gold">Save</button>
       </div>
     </form>
   `);
 
-  const selectedDays = new Set();
+  const selectedDays = new Set((c.days||[]).map((v,i)=>v?i:null).filter(v=>v!==null));
   document.querySelectorAll('#dayChips .day-chip').forEach(chip => {
     chip.addEventListener('click', () => {
       const d = Number(chip.dataset.day);
@@ -467,25 +647,20 @@ function openAddClassModal(){
     });
   });
 
-  document.getElementById('addClassForm').addEventListener('submit', e => {
+  document.getElementById('editClassForm').addEventListener('submit', e => {
     e.preventDefault();
     const fd = new FormData(e.target);
     const days = [false,false,false,false,false,false,false];
     selectedDays.forEach(d => days[d] = true);
-    const newClass = {
-      id: uid(),
-      name: fd.get('name').trim(),
-      subtitle: fd.get('subtitle').trim(),
-      lectureInfo: fd.get('lectureInfo').trim(),
-      website: fd.get('website').trim(),
-      discord: fd.get('discord').trim(),
-      color: fd.get('color'),
-      days
-    };
-    state.classes.push(newClass);
+    c.name = fd.get('name').trim() || c.name;
+    c.subtitle = fd.get('subtitle').trim();
+    c.lectureInfo = fd.get('lectureInfo').trim();
+    c.website = fd.get('website').trim();
+    c.discord = fd.get('discord').trim();
+    c.color = fd.get('color');
+    c.days = days;
     saveState();
     closeModal();
-    ui.view = 'class'; ui.classId = newClass.id;
     render();
   });
 }
@@ -651,16 +826,56 @@ document.addEventListener('click', e => {
       break;
     }
 
+    case 'edit-class': openEditClassModal(el.dataset.id); break;
+
     case 'close-modal': closeModal(); break;
   }
 });
 
-// right-click on a todo item -> custom delete context menu
+// right-click on a class tab -> rename it inline; right-click on a todo item -> delete menu
 document.addEventListener('contextmenu', e => {
+  const classRow = e.target.closest('.class-nav-row');
+  if(classRow && classRow.dataset.id){
+    e.preventDefault();
+    ui.renamingClassId = classRow.dataset.id;
+    render();
+    return;
+  }
   const item = e.target.closest('.todo-item');
   if(item){
     e.preventDefault();
     showContextMenu(e.pageX, e.pageY, item.dataset.id);
+  }
+});
+
+// drag-and-drop reordering of class tabs
+document.addEventListener('dragstart', e => {
+  const row = e.target.closest('.class-nav-row');
+  if(row && row.dataset.id){
+    e.dataTransfer.setData('text/plain', row.dataset.id);
+    e.dataTransfer.effectAllowed = 'move';
+    row.classList.add('dragging');
+  }
+});
+document.addEventListener('dragend', e => {
+  const row = e.target.closest('.class-nav-row');
+  if(row) row.classList.remove('dragging');
+});
+document.addEventListener('dragover', e => {
+  const row = e.target.closest('.class-nav-row');
+  if(row && row.dataset.id){ e.preventDefault(); row.classList.add('drag-over'); }
+});
+document.addEventListener('dragleave', e => {
+  const row = e.target.closest('.class-nav-row');
+  if(row) row.classList.remove('drag-over');
+});
+document.addEventListener('drop', e => {
+  const row = e.target.closest('.class-nav-row');
+  if(row && row.dataset.id){
+    e.preventDefault();
+    row.classList.remove('drag-over');
+    const draggedId = e.dataTransfer.getData('text/plain');
+    moveClass(draggedId, row.dataset.id);
   }
 });
 document.getElementById('ctxDelete').addEventListener('click', () => {
@@ -673,9 +888,10 @@ document.getElementById('ctxDelete').addEventListener('click', () => {
 });
 
 document.getElementById('homeNavBtn').addEventListener('click', () => { ui.view='home'; render(); });
-document.getElementById('addClassBtn').addEventListener('click', openAddClassModal);
+document.getElementById('addClassBtn').addEventListener('click', () => { ui.addingClass = true; render(); });
 
 /* ---------------------------------------------------------
    INIT
+   Rendering starts once firebase.auth().onAuthStateChanged
+   (above) fires and either shows the app or the sign-in screen.
    --------------------------------------------------------- */
-render();
