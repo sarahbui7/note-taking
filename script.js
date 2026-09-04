@@ -99,11 +99,16 @@ function saveState(){
 
 function friendlyAuthError(err){
   const map = {
-    'auth/popup-closed-by-user': 'Sign-in was closed before finishing — try again.',
-    'auth/popup-blocked': 'Your browser blocked the sign-in popup — allow popups for this site and try again.',
-    'auth/cancelled-popup-request': 'Sign-in was cancelled — try again.',
     'auth/api-key-not-valid.-please-pass-a-valid-api-key.': 'Firebase isn\'t configured yet — check firebase-config.js.',
-    'auth/operation-not-allowed': 'Google sign-in isn\'t enabled yet — enable it in the Firebase console under Authentication > Sign-in method.',
+    'auth/operation-not-allowed': 'Email/password sign-in isn\'t enabled yet — enable it in the Firebase console under Authentication > Sign-in method.',
+    'auth/invalid-email': 'That email address doesn\'t look right.',
+    'auth/user-not-found': 'No account found with that email — try signing up instead.',
+    'auth/wrong-password': 'Incorrect password — try again.',
+    'auth/invalid-credential': 'Incorrect email or password.',
+    'auth/email-already-in-use': 'An account already exists with that email — try signing in instead.',
+    'auth/weak-password': 'Password should be at least 6 characters.',
+    'auth/missing-password': 'Enter a password.',
+    'auth/too-many-requests': 'Too many attempts — wait a moment and try again.',
   };
   return map[err.code] || err.message;
 }
@@ -124,16 +129,40 @@ firebase.auth().onAuthStateChanged(user => {
   }
 });
 
-document.getElementById('googleSignInBtn').addEventListener('click', async () => {
+/* ---------- email/password sign in + sign up ---------- */
+let authMode = 'signin'; // 'signin' | 'signup'
+
+document.getElementById('authModeToggle').addEventListener('click', () => {
+  authMode = authMode === 'signin' ? 'signup' : 'signin';
+  document.getElementById('authSub').textContent = authMode === 'signin'
+    ? 'Sign in to sync your notes across every device.'
+    : 'Create an account to sync your notes across every device.';
+  document.getElementById('authSubmitBtn').textContent = authMode === 'signin' ? 'Sign in' : 'Sign up';
+  document.getElementById('authModeToggle').textContent = authMode === 'signin'
+    ? "Don't have an account? Sign up"
+    : 'Already have an account? Sign in';
+  document.getElementById('authError').classList.add('hidden');
+});
+
+document.getElementById('authForm').addEventListener('submit', async e => {
+  e.preventDefault();
   const errEl = document.getElementById('authError');
   errEl.classList.add('hidden');
+  const email = document.getElementById('authEmail').value.trim();
+  const password = document.getElementById('authPassword').value;
+  const submitBtn = document.getElementById('authSubmitBtn');
+  submitBtn.disabled = true;
   try{
-    const provider = new firebase.auth.GoogleAuthProvider();
-    await firebase.auth().signInWithPopup(provider);
+    if(authMode === 'signin'){
+      await firebase.auth().signInWithEmailAndPassword(email, password);
+    } else {
+      await firebase.auth().createUserWithEmailAndPassword(email, password);
+    }
   }catch(err){
     errEl.textContent = friendlyAuthError(err);
     errEl.classList.remove('hidden');
   }
+  submitBtn.disabled = false;
 });
 
 document.getElementById('signOutBtn').addEventListener('click', () => firebase.auth().signOut());
@@ -1559,537 +1588,6 @@ document.getElementById('ctxDelete').addEventListener('click', () => {
   if(pendingItemId){
     if(pendingItemType === 'quiz'){ state.quizzes = state.quizzes.filter(q => q.id !== pendingItemId); }
     else { state.todos = state.todos.filter(t => t.id !== pendingItemId); }
-    saveState();
-  }
-  hideContextMenu();
-  render();
-});
-
-document.getElementById('homeNavBtn').addEventListener('click', () => { ui.view='home'; render(); });
-document.getElementById('addClassBtn').addEventListener('click', () => { ui.addingClass = true; render(); });
-
-/* ---------------------------------------------------------
-   INIT
-   Rendering starts once firebase.auth().onAuthStateChanged
-   (above) fires and either shows the app or the sign-in screen.
-   --------------------------------------------------------- */========
-   CALENDAR RENDERING (shared by home + mini-cal)
-   opts: { small, todayStr, selected, classId }
-   ========================================================= */
-function calendarHtml(year, month, opts){
-  opts = opts || {};
-  const firstOfMonth = new Date(year, month, 1);
-  const startWeekday = firstOfMonth.getDay();
-  const daysInMonth = new Date(year, month+1, 0).getDate();
-  const daysInPrevMonth = new Date(year, month, 0).getDate();
-
-  const cells = [];
-  // leading days from previous month
-  for(let i=0;i<startWeekday;i++){
-    const dayNum = daysInPrevMonth - startWeekday + 1 + i;
-    const d = new Date(year, month-1, dayNum);
-    cells.push({ dateStr: toDateStr(d), dayNum, otherMonth: true });
-  }
-  // this month
-  for(let d=1; d<=daysInMonth; d++){
-    const dt = new Date(year, month, d);
-    cells.push({ dateStr: toDateStr(dt), dayNum: d, otherMonth: false });
-  }
-  // trailing days to complete final week row
-  while(cells.length % 7 !== 0){
-    const idx = cells.length - (startWeekday + daysInMonth);
-    const d = new Date(year, month+1, idx+1);
-    cells.push({ dateStr: toDateStr(d), dayNum: d.getDate(), otherMonth: true });
-  }
-
-  const dow = DOW_LABELS.map(l => `<div class="cal-dow">${l}</div>`).join('');
-
-  const dayCells = cells.map(cell => {
-    const isToday = cell.dateStr === opts.todayStr;
-    const isSelected = opts.selected && cell.dateStr === opts.selected;
-    const dots = [];
-    if(todosDueOn(cell.dateStr).length) dots.push('<span class="cal-dot todo"></span>');
-    if(eventsOn(cell.dateStr).length) dots.push('<span class="cal-dot event"></span>');
-    if(!opts.small && classesMeetingOn(cell.dateStr).length) dots.push('<span class="cal-dot class"></span>');
-
-    const clickAction = opts.small ? 'mini-cal-pick' : 'open-day';
-    const classIdAttr = opts.classId ? `data-classid="${opts.classId}"` : '';
-
-    return `<div class="cal-day ${cell.otherMonth?'other-month':''} ${isToday?'today':''} ${isSelected?'selected':''}"
-                 data-date="${cell.dateStr}" data-action="${clickAction}" ${classIdAttr}>
-              <span class="cal-daynum">${cell.dayNum}</span>
-              <span class="cal-dots">${dots.join('')}</span>
-            </div>`;
-  }).join('');
-
-  return `<div class="cal-grid">${dow}${dayCells}</div>`;
-}
-
-/* =========================================================
-   DAY MODAL (click a day on the month calendar)
-   ========================================================= */
-function openDayModal(dateStr){
-  const evs = eventsOn(dateStr);
-  const dues = todosDueOn(dateStr);
-  const classesOn = classesMeetingOn(dateStr);
-
-  showModal(`
-    <h3>${niceDate(dateStr)}</h3>
-
-    <div class="day-modal-section">
-      <h4>Events</h4>
-      <div class="day-modal-list">
-        ${evs.length ? evs.map(e => `<div class="row" style="background:#faf8fc;border:1px solid #ede6f2;border-radius:10px;padding:8px 10px;">🎉 ${escapeHtml(e.title)}
-          <button class="icon-btn" style="float:right;color:var(--red);" data-action="delete-event" data-id="${e.id}" data-date="${dateStr}">✕</button></div>`).join('') : `<div class="empty-note">No events.</div>`}
-      </div>
-    </div>
-
-    <div class="day-modal-section">
-      <h4>Due</h4>
-      <div class="day-modal-list">
-        ${dues.length ? dues.map(t => `<div class="row" style="background:#faf8fc;border:1px solid #ede6f2;border-radius:10px;padding:8px 10px;">
-          📌 ${escapeHtml(t.text)} ${t.classId?`<span class="row-tag">— ${escapeHtml(getClass(t.classId)?.name||'')}</span>`:''}
-        </div>`).join('') : `<div class="empty-note">Nothing due.</div>`}
-      </div>
-    </div>
-
-    <div class="day-modal-section">
-      <h4>Classes meeting</h4>
-      <div class="day-modal-list">
-        ${classesOn.length ? classesOn.map(c => {
-          const weekday = parseDateStr(dateStr).getDay();
-          const todaysMeetings = (c.meetings||[]).filter(m => m.days && m.days[weekday]);
-          const label = todaysMeetings.map(m => `${escapeHtml(m.label||'Class')}${m.time?' '+escapeHtml(m.time):''}`).join(', ');
-          return `<div class="row" style="background:#faf8fc;border:1px solid #ede6f2;border-radius:10px;padding:8px 10px;">
-          🎓 ${escapeHtml(c.name)} ${label?`<span class="row-tag">— ${label}</span>`:''}
-          <button class="btn small ghost" style="float:right;" data-action="go-class-notes" data-id="${c.id}" data-date="${dateStr}">Open notes</button>
-        </div>`;
-        }).join('') : `<div class="empty-note">No classes meet this day.</div>`}
-      </div>
-    </div>
-
-    <div class="modal-actions">
-      <button class="btn ghost" data-action="close-modal">Close</button>
-    </div>
-  `);
-}
-
-/* =========================================================
-   EDIT CLASS DETAILS MODAL
-   (creation itself happens inline in the sidebar — this modal
-   is for filling in subtitle, meeting times, and links)
-   ========================================================= */
-function openEditClassModal(classId){
-  const c = getClass(classId);
-  if(!c) return;
-
-  let editingLinks = (c.links||[]).map(l => ({...l}));
-  if(editingLinks.length === 0) editingLinks.push({ label:'', url:'' });
-  let editingMeetings = (c.meetings||[]).map(m => ({ ...m, days: [...(m.days||[false,false,false,false,false,false,false])] }));
-  if(editingMeetings.length === 0) editingMeetings.push({ label:'', days:[false,false,false,false,false,false,false], time:'' });
-
-  showModal(`
-    <h3>Edit class details</h3>
-    <form id="editClassForm">
-      <div class="form-row">
-        <label>Class name</label>
-        <input type="text" name="name" value="${escapeHtml(c.name)}" required>
-      </div>
-      <div class="form-row">
-        <label>Subtitle</label>
-        <input type="text" name="subtitle" value="${escapeHtml(c.subtitle||'')}" placeholder="e.g. Embedded Systems I">
-      </div>
-
-      <div class="form-row">
-        <label>Meeting times</label>
-        <div id="meetingsContainer"></div>
-        <button type="button" class="btn small ghost" id="addMeetingBtn">+ Add meeting time</button>
-      </div>
-
-      <div class="form-row">
-        <label>Links</label>
-        <div id="linksContainer"></div>
-        <button type="button" class="btn small ghost" id="addLinkBtn">+ Add another link</button>
-      </div>
-
-      <div class="form-row">
-        <label>Tab color</label>
-        <input type="color" name="color" value="${c.color||'#e3a63f'}">
-      </div>
-      <div class="modal-actions">
-        <button type="button" class="btn ghost" data-action="close-modal">Cancel</button>
-        <button type="submit" class="btn gold">Save</button>
-      </div>
-    </form>
-  `);
-
-  function renderMeetingsRows(){
-    const container = document.getElementById('meetingsContainer');
-    container.innerHTML = editingMeetings.map((m,i) => `
-      <div class="builder-row">
-        <input type="text" class="meeting-label" data-idx="${i}" placeholder="e.g. Lecture, Lab" value="${escapeHtml(m.label||'')}">
-        <div class="days-row">
-          ${DOW_LABELS.map((l,d)=>`<button type="button" class="day-chip ${m.days[d]?'on':''}" data-idx="${i}" data-day="${d}">${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d]}</button>`).join('')}
-        </div>
-        <input type="time" class="meeting-time" data-idx="${i}" value="${escapeHtml(m.time||'')}">
-        <span class="weekly-tag">Weekly</span>
-        <button type="button" class="icon-btn remove-row-btn" data-idx="${i}" title="Remove">✕</button>
-      </div>
-    `).join('');
-    container.querySelectorAll('.meeting-label').forEach(inp => inp.addEventListener('input', () => { editingMeetings[Number(inp.dataset.idx)].label = inp.value; }));
-    container.querySelectorAll('.meeting-time').forEach(inp => inp.addEventListener('input', () => { editingMeetings[Number(inp.dataset.idx)].time = inp.value; }));
-    container.querySelectorAll('.day-chip').forEach(chip => chip.addEventListener('click', () => {
-      const i = Number(chip.dataset.idx), d = Number(chip.dataset.day);
-      editingMeetings[i].days[d] = !editingMeetings[i].days[d];
-      chip.classList.toggle('on');
-    }));
-    container.querySelectorAll('.remove-row-btn').forEach(btn => btn.addEventListener('click', () => {
-      editingMeetings.splice(Number(btn.dataset.idx), 1);
-      if(editingMeetings.length === 0) editingMeetings.push({ label:'', days:[false,false,false,false,false,false,false], time:'' });
-      renderMeetingsRows();
-    }));
-  }
-
-  function renderLinksRows(){
-    const container = document.getElementById('linksContainer');
-    container.innerHTML = editingLinks.map((l,i) => `
-      <div class="builder-row">
-        <input type="text" class="link-label" data-idx="${i}" placeholder="e.g. Website, Discord" value="${escapeHtml(l.label||'')}">
-        <input type="url" class="link-url" data-idx="${i}" placeholder="https://..." value="${escapeHtml(l.url||'')}">
-        <button type="button" class="icon-btn remove-row-btn" data-idx="${i}" title="Remove">✕</button>
-      </div>
-    `).join('');
-    container.querySelectorAll('.link-label').forEach(inp => inp.addEventListener('input', () => { editingLinks[Number(inp.dataset.idx)].label = inp.value; }));
-    container.querySelectorAll('.link-url').forEach(inp => inp.addEventListener('input', () => { editingLinks[Number(inp.dataset.idx)].url = inp.value; }));
-    container.querySelectorAll('.remove-row-btn').forEach(btn => btn.addEventListener('click', () => {
-      editingLinks.splice(Number(btn.dataset.idx), 1);
-      if(editingLinks.length === 0) editingLinks.push({ label:'', url:'' });
-      renderLinksRows();
-    }));
-  }
-
-  renderMeetingsRows();
-  renderLinksRows();
-  document.getElementById('addMeetingBtn').addEventListener('click', () => {
-    editingMeetings.push({ label:'', days:[false,false,false,false,false,false,false], time:'' });
-    renderMeetingsRows();
-  });
-  document.getElementById('addLinkBtn').addEventListener('click', () => {
-    editingLinks.push({ label:'', url:'' });
-    renderLinksRows();
-  });
-
-  document.getElementById('editClassForm').addEventListener('submit', e => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    c.name = fd.get('name').trim() || c.name;
-    c.subtitle = fd.get('subtitle').trim();
-    c.color = fd.get('color');
-    c.meetings = editingMeetings
-      .filter(m => (m.label && m.label.trim()) || m.days.some(Boolean) || m.time)
-      .map(m => ({ label: (m.label||'').trim(), days: m.days, time: m.time||'' }));
-    c.links = editingLinks
-      .filter(l => l.url && l.url.trim())
-      .map(l => ({ label: (l.label||'').trim() || 'Link', url: l.url.trim() }));
-    saveState();
-    closeModal();
-    render();
-  });
-}
-
-/* =========================================================
-   EDIT TODO MODAL
-   ========================================================= */
-function openEditTodoModal(todoId){
-  const t = state.todos.find(x => x.id === todoId);
-  if(!t) return;
-  const links = (t.links && t.links.length) ? t.links : (t.link ? [t.link] : []);
-
-  showModal(`
-    <h3>Edit task</h3>
-    <form id="editTodoForm">
-      <div class="form-row">
-        <label>Assignment name</label>
-        <input type="text" name="text" value="${escapeHtml(t.text)}" required>
-      </div>
-      <div class="form-row">
-        <label>Due date</label>
-        <input type="date" name="dueDate" value="${t.dueDate||''}">
-      </div>
-      <div class="form-row">
-        <label>Links</label>
-        ${linkInputsHtml('editTodoLinks', links)}
-      </div>
-      <div class="modal-actions">
-        <button type="button" class="btn ghost" data-action="close-modal">Cancel</button>
-        <button type="submit" class="btn gold">Save</button>
-      </div>
-    </form>
-  `);
-
-  wireLinkInputs('editTodoLinks');
-
-  document.getElementById('editTodoForm').addEventListener('submit', e => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    t.text = fd.get('text').trim() || t.text;
-    t.dueDate = fd.get('dueDate') || '';
-    t.links = collectLinkInputs('editTodoLinks');
-    saveState();
-    closeModal();
-    render();
-  });
-}
-
-/* =========================================================
-   ADD EVENT MODAL
-   ========================================================= */
-function openAddEventModal(){
-  showModal(`
-    <h3>Add an event</h3>
-    <form id="addEventForm">
-      <div class="form-row">
-        <label>Title</label>
-        <input type="text" name="title" placeholder="e.g. GBM, Retreat, Food Fest" required>
-      </div>
-      <div class="form-row">
-        <label>Date</label>
-        <input type="date" name="date" value="${todayStr()}" required>
-      </div>
-      <div class="modal-actions">
-        <button type="button" class="btn ghost" data-action="close-modal">Cancel</button>
-        <button type="submit" class="btn gold">Add event</button>
-      </div>
-    </form>
-  `);
-  document.getElementById('addEventForm').addEventListener('submit', e => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    state.events.push({ id: uid(), title: fd.get('title').trim(), date: fd.get('date') });
-    saveState();
-    closeModal();
-    render();
-  });
-}
-
-/* =========================================================
-   MODAL / CONTEXT MENU PLUMBING
-   ========================================================= */
-function showModal(html){
-  document.getElementById('modalBody').innerHTML = html;
-  document.getElementById('modalOverlay').classList.remove('hidden');
-}
-function closeModal(){
-  document.getElementById('modalOverlay').classList.add('hidden');
-}
-
-let pendingTodoId = null;
-function showContextMenu(x, y, todoId){
-  pendingTodoId = todoId;
-  const menu = document.getElementById('contextMenu');
-  menu.classList.remove('hidden');
-  // clamp so the menu never renders off-screen (matters most on mobile)
-  const rect = menu.getBoundingClientRect();
-  const maxX = window.innerWidth - rect.width - 8;
-  const maxY = window.innerHeight - rect.height - 8;
-  menu.style.left = Math.max(8, Math.min(x, maxX)) + 'px';
-  menu.style.top = Math.max(8, Math.min(y, maxY)) + 'px';
-}
-function hideContextMenu(){
-  document.getElementById('contextMenu').classList.add('hidden');
-  pendingTodoId = null;
-}
-
-/* =========================================================
-   MASTER RENDER
-   ========================================================= */
-function render(){
-  renderSidebar();
-  if(ui.view === 'class' && ui.classId){ renderClass(ui.classId); }
-  else { ui.view = 'home'; renderHome(); }
-}
-
-/* =========================================================
-   GLOBAL EVENT DELEGATION
-   (one set of listeners handles the whole re-rendered app)
-   ========================================================= */
-document.addEventListener('click', e => {
-  const el = e.target.closest('[data-action]');
-
-  // click outside modal closes it
-  if(e.target.id === 'modalOverlay'){ closeModal(); }
-  // click anywhere closes context menu (unless clicking its own button)
-  if(!e.target.closest('#contextMenu')){ hideContextMenu(); }
-
-  if(!el) return;
-  const action = el.dataset.action;
-
-  switch(action){
-    case 'go-class':
-      ui.view = 'class'; ui.classId = el.dataset.id; render(); break;
-
-    case 'delete-class': {
-      const c = getClass(el.dataset.id);
-      if(c && confirm(`Delete "${c.name}" and all its to-dos and notes?`)){
-        state.classes = state.classes.filter(x => x.id !== el.dataset.id);
-        state.todos = state.todos.filter(t => t.classId !== el.dataset.id);
-        state.notes = state.notes.filter(n => n.classId !== el.dataset.id);
-        if(ui.classId === el.dataset.id){ ui.view='home'; ui.classId=null; }
-        saveState(); render();
-      }
-      break;
-    }
-
-    case 'toggle-todo': {
-      const t = state.todos.find(x => x.id === el.dataset.id);
-      if(t){ t.done = !t.done; saveState(); render(); }
-      break;
-    }
-
-    case 'toggle-collapse':
-      ui.collapsed[el.dataset.id] = !ui.collapsed[el.dataset.id];
-      render();
-      break;
-
-    case 'toggle-minical':
-      ui.miniCalCollapsed[el.dataset.id] = !ui.miniCalCollapsed[el.dataset.id];
-      renderClass(el.dataset.id);
-      break;
-
-    case 'open-add-event': openAddEventModal(); break;
-    case 'delete-event': {
-      state.events = state.events.filter(x => x.id !== el.dataset.id);
-      saveState();
-      render();
-      openDayModal(el.dataset.date); // refresh modal with updated list
-      break;
-    }
-
-    case 'open-day': openDayModal(el.dataset.date); break;
-
-    case 'mini-cal-pick': {
-      const cid = el.dataset.classid;
-      ui.notesDate[cid] = el.dataset.date;
-      renderClass(cid);
-      break;
-    }
-
-    case 'go-class-notes':
-      ui.view = 'class'; ui.classId = el.dataset.id;
-      ui.notesDate[el.dataset.id] = el.dataset.date;
-      closeModal();
-      render();
-      break;
-
-    case 'flip-notes-cal':
-      state.settings.notesCalSide = state.settings.notesCalSide === 'left' ? 'right' : 'left';
-      saveState();
-      render();
-      break;
-
-    case 'home-cal-prev':
-      ui.homeCal.month--; if(ui.homeCal.month<0){ ui.homeCal.month=11; ui.homeCal.year--; }
-      render();
-      break;
-    case 'home-cal-next':
-      ui.homeCal.month++; if(ui.homeCal.month>11){ ui.homeCal.month=0; ui.homeCal.year++; }
-      render();
-      break;
-
-    case 'mini-cal-prev': {
-      const cid = el.dataset.classid;
-      const cur = ui.classCal[cid];
-      cur.month--; if(cur.month<0){ cur.month=11; cur.year--; }
-      renderClass(cid);
-      break;
-    }
-    case 'mini-cal-next': {
-      const cid = el.dataset.classid;
-      const cur = ui.classCal[cid];
-      cur.month++; if(cur.month>11){ cur.month=0; cur.year++; }
-      renderClass(cid);
-      break;
-    }
-
-    case 'edit-class': openEditClassModal(el.dataset.id); break;
-
-    case 'close-modal': closeModal(); break;
-  }
-});
-
-// right-click on a class tab -> rename it inline; right-click on a todo item -> edit/delete menu
-document.addEventListener('contextmenu', e => {
-  const classRow = e.target.closest('.class-nav-row');
-  if(classRow && classRow.dataset.id){
-    e.preventDefault();
-    ui.renamingClassId = classRow.dataset.id;
-    render();
-    return;
-  }
-  const item = e.target.closest('.todo-item');
-  if(item){
-    e.preventDefault();
-    showContextMenu(e.pageX, e.pageY, item.dataset.id);
-  }
-});
-
-// long-press on a todo item -> same edit/delete menu, for mobile/touch
-let longPressTimer = null;
-let longPressFired = false;
-document.addEventListener('touchstart', e => {
-  const item = e.target.closest('.todo-item');
-  if(!item) return;
-  const touch = e.touches[0];
-  longPressFired = false;
-  longPressTimer = setTimeout(() => {
-    longPressFired = true;
-    showContextMenu(touch.pageX, touch.pageY, item.dataset.id);
-  }, 500);
-}, { passive: true });
-document.addEventListener('touchmove', () => clearTimeout(longPressTimer));
-document.addEventListener('touchend', e => {
-  clearTimeout(longPressTimer);
-  if(longPressFired){ e.preventDefault(); longPressFired = false; } // swallow the click that follows the long-press
-});
-
-// drag-and-drop reordering of class tabs
-document.addEventListener('dragstart', e => {
-  const row = e.target.closest('.class-nav-row');
-  if(row && row.dataset.id){
-    e.dataTransfer.setData('text/plain', row.dataset.id);
-    e.dataTransfer.effectAllowed = 'move';
-    row.classList.add('dragging');
-  }
-});
-document.addEventListener('dragend', e => {
-  const row = e.target.closest('.class-nav-row');
-  if(row) row.classList.remove('dragging');
-});
-document.addEventListener('dragover', e => {
-  const row = e.target.closest('.class-nav-row');
-  if(row && row.dataset.id){ e.preventDefault(); row.classList.add('drag-over'); }
-});
-document.addEventListener('dragleave', e => {
-  const row = e.target.closest('.class-nav-row');
-  if(row) row.classList.remove('drag-over');
-});
-document.addEventListener('drop', e => {
-  const row = e.target.closest('.class-nav-row');
-  if(row && row.dataset.id){
-    e.preventDefault();
-    row.classList.remove('drag-over');
-    const draggedId = e.dataTransfer.getData('text/plain');
-    moveClass(draggedId, row.dataset.id);
-  }
-});
-document.getElementById('ctxEdit').addEventListener('click', () => {
-  const id = pendingTodoId;
-  hideContextMenu();
-  if(id) openEditTodoModal(id);
-});
-document.getElementById('ctxDelete').addEventListener('click', () => {
-  if(pendingTodoId){
-    state.todos = state.todos.filter(t => t.id !== pendingTodoId);
     saveState();
   }
   hideContextMenu();

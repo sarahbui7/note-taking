@@ -76,12 +76,10 @@ a{ color: var(--gold); }
   background: var(--red-soft); color: var(--red);
   border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin-bottom: 12px;
 }
-.google-btn{
-  width:100%;
-  display:flex; align-items:center; justify-content:center; gap:10px;
-}
 .auth-toggle{
   display:block;
+  width: 100%;
+  text-align: center;
   background: transparent; border:none; color: var(--purple);
   font-size: 12.5px; margin-top: 14px; text-decoration: underline;
 }
@@ -89,7 +87,7 @@ a{ color: var(--gold); }
   font-size: 12px; color: var(--text-onpurple-dim); margin-bottom: 4px;
   overflow-wrap: anywhere;
 }
-.sidebar-footer .auth-toggle{ color: var(--gold-soft); margin-top: 0; }
+.sidebar-footer .auth-toggle{ color: var(--gold-soft); margin-top: 0; text-align:left; width:auto; }
 
 /* =========================================================
    APP LAYOUT
@@ -511,6 +509,8 @@ a{ color: var(--gold); }
 .form-row input[type="text"],
 .form-row input[type="url"],
 .form-row input[type="date"],
+.form-row input[type="email"],
+.form-row input[type="password"],
 .form-row textarea{
   border:1px solid #e4dcec; background:#faf8fc; border-radius:8px; padding:9px 10px; font-size:13.5px;
   width: 100%;
