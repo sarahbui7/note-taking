@@ -11,8 +11,9 @@ const DOW_LABELS  = ['S','M','T','W','T','F','S'];
 /* ---------------------------------------------------------
    STATE
    --------------------------------------------------------- */
+const DEFAULT_SETTINGS = { notesCalSide: 'right', notesLineHeight: '1.6', notesParaSpacing: 'md', bgColor: '', timeFormat: '12' };
 function defaultState(){
-  return { classes: [], todos: [], quizzes: [], events: [], orgs: [], notes: [], settings: { notesCalSide: 'right', notesLineHeight: '1.6', notesParaSpacing: 'md' } };
+  return { classes: [], todos: [], quizzes: [], events: [], orgs: [], notes: [], settings: { ...DEFAULT_SETTINGS } };
 }
 let state = defaultState(); // replaced with real data once signed in
 
@@ -64,6 +65,7 @@ function normalizeEvent(e){
   if(!e.recurrence) e.recurrence = 'none';
   if(!e.days) e.days = [false,false,false,false,false,false,false];
   if(e.orgId === undefined) e.orgId = null;
+  if(!e.endDate) e.endDate = e.date;
   return e;
 }
 
@@ -78,12 +80,13 @@ function attachFirestoreListener(uid){
         events: (data.events || []).map(normalizeEvent),
         orgs: data.orgs || [],
         notes: data.notes || [],
-        settings: Object.assign({ notesCalSide: 'right', notesLineHeight: '1.6', notesParaSpacing: 'md' }, data.settings || {}),
+        settings: Object.assign({ ...DEFAULT_SETTINGS }, data.settings || {}),
       };
     } else {
       state = defaultState();
       await userDocRef(uid).set(state);
     }
+    applyTheme();
     // Don't yank the cursor out of the notes editor while someone is mid-sentence.
     const typingInNotes = document.activeElement && document.activeElement.id === 'notesEditable';
     if(!typingInNotes) render();
@@ -185,6 +188,45 @@ function escapeHtml(str){
   return (str||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+// e.g. addMonthsToDateStr('2026-09-04', 4) -> '2027-01-04'
+function addMonthsToDateStr(dateStr, months){
+  const d = parseDateStr(dateStr);
+  d.setMonth(d.getMonth() + months);
+  return toDateStr(d);
+}
+
+// formats a "HH:MM" time string per the user's chosen setting (12-hour by default)
+function formatTime(t){
+  if(!t) return '';
+  const [hStr, mStr] = t.split(':');
+  let h = Number(hStr);
+  if((state.settings.timeFormat || '12') === '24') return `${pad2(h)}:${mStr}`;
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12; if(h === 0) h = 12;
+  return `${h}:${mStr} ${ampm}`;
+}
+
+// lightens (positive percent) or darkens (negative percent) a hex color
+function shadeColor(hex, percent){
+  hex = (hex||'#624374').replace('#','');
+  if(hex.length === 3) hex = hex.split('').map(c=>c+c).join('');
+  const num = parseInt(hex, 16);
+  let r = (num >> 16) & 0xff, g = (num >> 8) & 0xff, b = num & 0xff;
+  r = Math.max(0, Math.min(255, Math.round(r * (1 + percent))));
+  g = Math.max(0, Math.min(255, Math.round(g * (1 + percent))));
+  b = Math.max(0, Math.min(255, Math.round(b * (1 + percent))));
+  return '#' + [r,g,b].map(x => x.toString(16).padStart(2,'0')).join('');
+}
+
+// applies the user's chosen background color (with derived sidebar shades) as CSS variables
+function applyTheme(){
+  const bg = (state.settings && state.settings.bgColor) || '#624374';
+  const root = document.documentElement.style;
+  root.setProperty('--purple', bg);
+  root.setProperty('--purple-deep', shadeColor(bg, -0.24));
+  root.setProperty('--purple-deeper', shadeColor(bg, -0.4));
+}
+
 /* ---------------------------------------------------------
    DATA HELPERS
    --------------------------------------------------------- */
@@ -196,7 +238,7 @@ function getOrg(id){ return state.orgs.find(o => o.id === id); }
 function classColorFor(classId){ const c = getClass(classId); return (c && c.color) || '#9c8aa8'; }
 function meetingTimeLabel(m){
   if(!m.time) return '';
-  return m.endTime ? `${m.time}\u2013${m.endTime}` : m.time;
+  return m.endTime ? `${formatTime(m.time)}\u2013${formatTime(m.endTime)}` : formatTime(m.time);
 }
 
 function todosDueOn(dateStr){ return state.todos.filter(t => t.dueDate === dateStr); }
@@ -217,6 +259,8 @@ function weeksBetween(fromDateStr, toDateStr){
 
 function eventOccursOn(e, dateStr){
   if(dateStr < e.date) return false;
+  const cap = e.endDate || e.date;
+  if(e.recurrence !== 'none' && dateStr > cap) return false; // recurrence stops after the end date
   const weekday = parseDateStr(dateStr).getDay();
   switch(e.recurrence){
     case 'weekly':
@@ -226,7 +270,7 @@ function eventOccursOn(e, dateStr){
     case 'monthly':
       return parseDateStr(dateStr).getDate() === parseDateStr(e.date).getDate();
     default:
-      return dateStr === e.date;
+      return dateStr >= e.date && dateStr <= cap; // non-recurring events can span a date range
   }
 }
 function eventsOn(dateStr){ return state.events.filter(e => eventOccursOn(e, dateStr)); }
@@ -338,6 +382,7 @@ function renderHome(){
   const dueToday = todosDueOn(today);
   const evToday = eventsOn(today);
   const classesToday = classesMeetingOn(today);
+  const allExams = [...state.quizzes].sort((a,b) => (a.date||'9999').localeCompare(b.date||'9999'));
 
   content.innerHTML = `
     <div class="page-header">
@@ -345,21 +390,33 @@ function renderHome(){
       <div class="sub">${niceDate(today)}</div>
     </div>
 
-    <!-- AGGREGATED TO-DO LIST -->
-    <section class="panel">
-      <div class="panel-header">
-        <h3>To-do</h3>
-        <span class="hint">from every class + general reminders</span>
-      </div>
-      <form class="todo-add-row" id="homeTodoForm">
-        <input class="t-text" type="text" name="text" placeholder="Add a general reminder..." required>
-        <input class="t-date" type="date" name="dueDate">
-        <button class="btn gold" type="submit">Add</button>
-      </form>
-      <div class="todo-list">
-        ${allOpenTodos.length ? allOpenTodos.map(t => todoItemHtml(t, true)).join('') : `<div class="empty-note">Nothing pending — nice.</div>`}
-      </div>
-    </section>
+    <!-- AGGREGATED TO-DO + EXAMS, side by side like the class page -->
+    <div class="todo-quiz-row">
+      <section class="panel todo-panel">
+        <div class="panel-header">
+          <h3>To-do</h3>
+          <span class="hint">from every class + general reminders</span>
+        </div>
+        <form class="todo-add-row" id="homeTodoForm">
+          <input class="t-text" type="text" name="text" placeholder="Add a general reminder..." required>
+          <input class="t-date" type="date" name="dueDate">
+          <button class="btn gold" type="submit">Add</button>
+        </form>
+        <div class="todo-list">
+          ${allOpenTodos.length ? allOpenTodos.map(t => todoItemHtml(t, true)).join('') : `<div class="empty-note">Nothing pending — nice.</div>`}
+        </div>
+      </section>
+
+      <section class="panel quiz-panel">
+        <div class="panel-header">
+          <h3>Exams</h3>
+          <span class="hint">from every class</span>
+        </div>
+        <div class="quiz-list">
+          ${allExams.length ? allExams.map(q => quizItemHtml(q, true)).join('') : `<div class="empty-note">Nothing scheduled.</div>`}
+        </div>
+      </section>
+    </div>
 
     <!-- TODAY -->
     <section class="panel">
@@ -655,14 +712,17 @@ function todoItemHtml(t, showClassTag){
 /* =========================================================
    QUIZ / EXAM ITEM HTML
    ========================================================= */
-function quizItemHtml(q){
+function quizItemHtml(q, showClassTag){
+  const cls = q.classId ? getClass(q.classId) : null;
+  const tagStyle = cls ? `style="background:${cls.color}22;color:${cls.color};border:1px solid ${cls.color}55;"` : '';
   return `
     <div class="quiz-item" data-id="${q.id}">
       <div class="t-text">${escapeHtml(q.title)}</div>
       <div class="t-meta">
         ${q.date ? `<span>${niceDate(q.date)}</span>` : ''}
-        ${q.time ? `<span>${escapeHtml(q.time)}</span>` : ''}
+        ${q.time ? `<span>${formatTime(q.time)}</span>` : ''}
         ${q.link ? `<a href="${escapeHtml(q.link)}" target="_blank" rel="noopener">Open link ↗</a>` : ''}
+        ${showClassTag && cls ? `<span class="t-class-tag" ${tagStyle}>${escapeHtml(cls.name)}</span>` : ''}
       </div>
       ${q.topics ? `<div class="q-topics">${escapeHtml(q.topics)}</div>` : ''}
     </div>
@@ -756,36 +816,51 @@ function calendarHtml(year, month, opts){
     return `<div class="cal-day ${cell.otherMonth?'other-month':''} ${isToday?'today':''} ${isSelected?'selected':''}"
                  data-date="${cell.dateStr}" data-action="${clickAction}" ${classIdAttr}>
               <span class="cal-daynum">${cell.dayNum}</span>
-              <span class="cal-dots">${dots}</span>
+              <span class="cal-dots-wrap">
+                <span class="cal-dots-top">${dots.top}</span>
+                <span class="cal-dots-bottom">
+                  <span class="cal-dots-bl">${dots.bl}</span>
+                  <span class="cal-dots-br">${dots.br}</span>
+                </span>
+              </span>
             </div>`;
   }).join('');
 
   return `<div class="cal-grid">${dow}${dayCells}</div>`;
 }
 
-// builds the little colored dots under a calendar day, color-coded per class/org
+// builds the little colored dots under a calendar day, grouped into:
+// top row = assignments (circle) + exams (square); bottom row = classes (left) + meetings/events (right)
 function dotsHtml(dateStr, opts){
-  const dots = [];
+  const top = [];
 
   const todoColors = new Set();
   todosDueOn(dateStr).forEach(t => todoColors.add(t.classId ? classColorFor(t.classId) : '#624374'));
-  todoColors.forEach(color => dots.push(`<span class="cal-dot" style="background:${color}"></span>`));
-
-  const evColors = new Set();
-  eventsOn(dateStr).forEach(e => evColors.add(e.orgId && getOrg(e.orgId) ? getOrg(e.orgId).color : '#e3a63f'));
-  evColors.forEach(color => dots.push(`<span class="cal-dot" style="background:${color}"></span>`));
+  todoColors.forEach(color => top.push(`<span class="cal-dot" style="background:${color}"></span>`));
 
   if(!opts.small){
     const quizColors = new Set();
     quizzesOn(dateStr).forEach(q => quizColors.add(classColorFor(q.classId)));
-    quizColors.forEach(color => dots.push(`<span class="cal-dot cal-dot-ring" style="background:${color}"></span>`));
-
-    const classColors = new Set();
-    classesMeetingOn(dateStr).forEach(c => classColors.add(c.color || '#cdb9dc'));
-    classColors.forEach(color => dots.push(`<span class="cal-dot cal-dot-soft" style="background:${color}"></span>`));
+    quizColors.forEach(color => top.push(`<span class="cal-dot cal-dot-square" style="background:${color}"></span>`));
   }
 
-  return dots.slice(0, 8).join('');
+  const bl = [];
+  if(!opts.small){
+    const classColors = new Set();
+    classesMeetingOn(dateStr).forEach(c => classColors.add(c.color || '#cdb9dc'));
+    classColors.forEach(color => bl.push(`<span class="cal-dot cal-dot-soft" style="background:${color}"></span>`));
+  }
+
+  const br = [];
+  const evColors = new Set();
+  eventsOn(dateStr).forEach(e => evColors.add(e.orgId && getOrg(e.orgId) ? getOrg(e.orgId).color : '#e3a63f'));
+  evColors.forEach(color => br.push(`<span class="cal-dot" style="background:${color}"></span>`));
+
+  return {
+    top: top.slice(0, 6).join(''),
+    bl: bl.slice(0, 4).join(''),
+    br: br.slice(0, 4).join(''),
+  };
 }
 
 /* =========================================================
@@ -805,7 +880,8 @@ function openDayModal(dateStr){
         ${evs.length ? evs.map(e => { const org = e.orgId ? getOrg(e.orgId) : null; return `<div class="row" style="background:#faf8fc;border:1px solid #ede6f2;border-radius:10px;padding:8px 10px;">
           <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${org?org.color:'#e3a63f'};margin-right:6px;"></span>${escapeHtml(e.title)}
           ${org ? `<span class="row-tag">— ${escapeHtml(org.name)}</span>` : ''}
-          ${e.recurrence && e.recurrence!=='none' ? `<span class="row-tag">· ${e.recurrence==='weekly'?'Weekly':e.recurrence==='biweekly'?'Biweekly':'Monthly'}</span>` : ''}
+          ${e.recurrence && e.recurrence!=='none' ? `<span class="row-tag">· ${e.recurrence==='weekly'?'Weekly':e.recurrence==='biweekly'?'Biweekly':'Monthly'} until ${niceDate(e.endDate)}</span>` : ''}
+          ${(!e.recurrence || e.recurrence==='none') && e.endDate && e.endDate!==e.date ? `<span class="row-tag">· through ${niceDate(e.endDate)}</span>` : ''}
           <button class="icon-btn" style="float:right;color:var(--red);" data-action="delete-event" data-id="${e.id}" data-date="${dateStr}">✕</button></div>`; }).join('') : `<div class="empty-note">No events.</div>`}
       </div>
     </div>
@@ -1151,8 +1227,9 @@ function openEditQuizModal(quizId){
    supports: organization/group (with color, add/rename/delete),
    and recurrence (weekly / biweekly / monthly + day-of-week)
    ========================================================= */
-function openAddEventModal(prefillDate){
+function openAddEventModal(prefillDate, pos){
   const initialDate = prefillDate || todayStr();
+  const defaultEndDate = addMonthsToDateStr(initialDate, 4);
   let selectedOrgId = null;
   let renamingOrgId = null;
   let selectedDays = [false,false,false,false,false,false,false];
@@ -1166,8 +1243,12 @@ function openAddEventModal(prefillDate){
         <input type="text" name="title" placeholder="e.g. GBM, Retreat, Food Fest" required>
       </div>
       <div class="form-row">
-        <label>Date</label>
+        <label>Start date</label>
         <input type="date" name="date" value="${initialDate}" required>
+      </div>
+      <div class="form-row">
+        <label>End date</label>
+        <input type="date" name="endDate" value="${defaultEndDate}" min="${initialDate}">
       </div>
 
       <div class="form-row">
@@ -1205,7 +1286,7 @@ function openAddEventModal(prefillDate){
         <button type="submit" class="btn gold">Add event</button>
       </div>
     </form>
-  `);
+  `, pos);
 
   function renderOrgManager(){
     const wrap = document.getElementById('orgManager');
@@ -1265,6 +1346,16 @@ function openAddEventModal(prefillDate){
 
   renderOrgManager();
 
+  // keep "End date" defaulting to 4 months after "Start date" until the user edits it themselves
+  const startInput = document.querySelector('#addEventForm input[name="date"]');
+  const endInput = document.querySelector('#addEventForm input[name="endDate"]');
+  let endDateTouched = false;
+  endInput.addEventListener('input', () => { endDateTouched = true; });
+  startInput.addEventListener('change', () => {
+    endInput.min = startInput.value;
+    if(!endDateTouched) endInput.value = addMonthsToDateStr(startInput.value, 4);
+  });
+
   document.getElementById('eventOrgSelect').addEventListener('change', e => { selectedOrgId = e.target.value || null; });
 
   document.getElementById('addOrgBtn').addEventListener('click', () => {
@@ -1307,6 +1398,7 @@ function openAddEventModal(prefillDate){
       id: uid(),
       title: fd.get('title').trim(),
       date: fd.get('date'),
+      endDate: fd.get('endDate') || defaultEndDate,
       orgId: selectedOrgId,
       recurrence,
       days: (recurrence === 'weekly' || recurrence === 'biweekly') ? [...selectedDays] : [false,false,false,false,false,false,false],
@@ -1318,11 +1410,67 @@ function openAddEventModal(prefillDate){
 }
 
 /* =========================================================
+   SETTINGS MODAL (background color + time format)
+   ========================================================= */
+function openSettingsModal(){
+  const bgColor = state.settings.bgColor || '#624374';
+  const timeFormat = state.settings.timeFormat || '12';
+  showModal(`
+    <h3>Settings</h3>
+    <form id="settingsForm">
+      <div class="form-row">
+        <label>Background color</label>
+        <input type="color" name="bgColor" value="${bgColor}">
+      </div>
+      <div class="form-row">
+        <label>Time format</label>
+        <select name="timeFormat">
+          <option value="12" ${timeFormat==='12'?'selected':''}>12-hour (2:15 PM)</option>
+          <option value="24" ${timeFormat==='24'?'selected':''}>24-hour / military (14:15)</option>
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" data-action="close-modal">Cancel</button>
+        <button type="submit" class="btn gold">Save</button>
+      </div>
+    </form>
+  `);
+  document.getElementById('settingsForm').addEventListener('submit', e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    state.settings.bgColor = fd.get('bgColor');
+    state.settings.timeFormat = fd.get('timeFormat');
+    saveState();
+    applyTheme();
+    closeModal();
+    render();
+  });
+}
+
+/* =========================================================
    MODAL / CONTEXT MENU PLUMBING
    ========================================================= */
-function showModal(html){
-  document.getElementById('modalBody').innerHTML = html;
+function showModal(html, pos){
+  const body = document.getElementById('modalBody');
+  body.innerHTML = html;
   document.getElementById('modalOverlay').classList.remove('hidden');
+  if(pos && typeof pos.x === 'number'){
+    // open right where the user clicked, clamped so it stays fully on-screen
+    body.style.position = 'fixed';
+    body.style.margin = '0';
+    requestAnimationFrame(() => {
+      const rect = body.getBoundingClientRect();
+      const maxX = window.innerWidth - rect.width - 12;
+      const maxY = window.innerHeight - rect.height - 12;
+      body.style.left = Math.max(12, Math.min(pos.x, maxX)) + 'px';
+      body.style.top = Math.max(12, Math.min(pos.y, maxY)) + 'px';
+    });
+  } else {
+    body.style.position = '';
+    body.style.margin = '';
+    body.style.left = '';
+    body.style.top = '';
+  }
 }
 function closeModal(){
   document.getElementById('modalOverlay').classList.add('hidden');
@@ -1350,7 +1498,9 @@ function hideContextMenu(){
 }
 
 /* ---------- day-cell right-click menu: quick add/delete event ---------- */
+let lastDayCtxPos = null;
 function showDayContextMenu(x, y, dateStr){
+  lastDayCtxPos = { x, y };
   const menu = document.getElementById('dayContextMenu');
   const evs = eventsOn(dateStr);
   menu.innerHTML = `
@@ -1400,7 +1550,7 @@ document.addEventListener('click', e => {
 
     case 'ctx-add-event':
       hideDayContextMenu();
-      openAddEventModal(el.dataset.date);
+      openAddEventModal(el.dataset.date, lastDayCtxPos);
       break;
     case 'ctx-delete-event':
       hideDayContextMenu();
@@ -1596,6 +1746,7 @@ document.getElementById('ctxDelete').addEventListener('click', () => {
 
 document.getElementById('homeNavBtn').addEventListener('click', () => { ui.view='home'; render(); });
 document.getElementById('addClassBtn').addEventListener('click', () => { ui.addingClass = true; render(); });
+document.getElementById('settingsBtn').addEventListener('click', openSettingsModal);
 
 /* ---------------------------------------------------------
    INIT

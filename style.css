@@ -393,9 +393,16 @@ a{ color: var(--gold); }
 .cal-day.other-month{ opacity: 0.35; }
 .cal-day.today{ border: 2px solid var(--gold); background: #fff8ea; }
 .cal-day .cal-daynum{ font-size: 12.5px; font-weight:700; color: var(--text-dark); }
-.cal-day .cal-dots{ margin-top:auto; display:flex; gap:3px; flex-wrap:wrap; }
+
+/* dot layout: top row = assignments (circle) + exams (square);
+   bottom row = classes (left) + meetings/events (right) */
+.cal-dots-wrap{ margin-top:auto; display:flex; flex-direction:column; gap:3px; }
+.cal-dots-top{ display:flex; gap:3px; flex-wrap:wrap; min-height:6px; }
+.cal-dots-bottom{ display:flex; align-items:center; justify-content:space-between; min-height:6px; }
+.cal-dots-bl, .cal-dots-br{ display:flex; gap:3px; }
+.cal-dots-br{ margin-left:auto; }
 .cal-dot{ width:6px; height:6px; border-radius:50%; flex-shrink:0; }
-.cal-dot-ring{ box-shadow: 0 0 0 1.5px #fff inset; }
+.cal-dot-square{ border-radius:1.5px; }
 .cal-dot-soft{ opacity: 0.55; }
 
 /* mini calendar (class page) */
