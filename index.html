@@ -58,11 +58,14 @@
   <div id="modalBody" class="modal-body"></div>
 </div>
 
-<!-- ============ RIGHT-CLICK / LONG-PRESS CONTEXT MENU (todo items) ============ -->
+<!-- ============ RIGHT-CLICK / LONG-PRESS CONTEXT MENU (todo / quiz items) ============ -->
 <div id="contextMenu" class="context-menu hidden">
   <button id="ctxEdit">✏️ Edit task</button>
   <button id="ctxDelete">🗑 Delete task</button>
 </div>
+
+<!-- ============ RIGHT-CLICK CONTEXT MENU (calendar day: add/delete event) ============ -->
+<div id="dayContextMenu" class="context-menu hidden"></div>
 
 <!-- ============ FIREBASE (fill in firebase-config.js with your project's keys) ============ -->
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>

@@ -12,7 +12,7 @@ const DOW_LABELS  = ['S','M','T','W','T','F','S'];
    STATE
    --------------------------------------------------------- */
 function defaultState(){
-  return { classes: [], todos: [], events: [], notes: [], settings: { notesCalSide: 'right', notesLineHeight: '1.6', notesParaSpacing: 'md' } };
+  return { classes: [], todos: [], quizzes: [], events: [], orgs: [], notes: [], settings: { notesCalSide: 'right', notesLineHeight: '1.6', notesParaSpacing: 'md' } };
 }
 let state = defaultState(); // replaced with real data once signed in
 
@@ -60,6 +60,13 @@ function normalizeTodo(t){
   return t;
 }
 
+function normalizeEvent(e){
+  if(!e.recurrence) e.recurrence = 'none';
+  if(!e.days) e.days = [false,false,false,false,false,false,false];
+  if(e.orgId === undefined) e.orgId = null;
+  return e;
+}
+
 function attachFirestoreListener(uid){
   unsubscribeSnapshot = userDocRef(uid).onSnapshot(async snap => {
     if(snap.exists){
@@ -67,7 +74,9 @@ function attachFirestoreListener(uid){
       state = {
         classes: (data.classes || []).map(normalizeClass),
         todos: (data.todos || []).map(normalizeTodo),
-        events: data.events || [],
+        quizzes: data.quizzes || [],
+        events: (data.events || []).map(normalizeEvent),
+        orgs: data.orgs || [],
         notes: data.notes || [],
         settings: Object.assign({ notesCalSide: 'right', notesLineHeight: '1.6', notesParaSpacing: 'md' }, data.settings || {}),
       };
@@ -152,19 +161,52 @@ function escapeHtml(str){
    --------------------------------------------------------- */
 function getClass(id){ return state.classes.find(c => c.id === id); }
 function classTodos(classId){ return state.todos.filter(t => t.classId === classId); }
+function classQuizzes(classId){ return state.quizzes.filter(q => q.classId === classId).sort((a,b) => (a.date||'9999').localeCompare(b.date||'9999')); }
 function findNote(classId, dateStr){ return state.notes.find(n => n.classId === classId && n.date === dateStr); }
+function getOrg(id){ return state.orgs.find(o => o.id === id); }
+function classColorFor(classId){ const c = getClass(classId); return (c && c.color) || '#9c8aa8'; }
+function meetingTimeLabel(m){
+  if(!m.time) return '';
+  return m.endTime ? `${m.time}\u2013${m.endTime}` : m.time;
+}
 
 function todosDueOn(dateStr){ return state.todos.filter(t => t.dueDate === dateStr); }
-function eventsOn(dateStr){ return state.events.filter(e => e.date === dateStr); }
+function quizzesOn(dateStr){ return state.quizzes.filter(q => q.date === dateStr); }
 function classesMeetingOn(dateStr){
   const weekday = parseDateStr(dateStr).getDay();
   return state.classes.filter(c => (c.meetings||[]).some(m => m.days && m.days[weekday]));
 }
 
+// weeks between two dates (used for biweekly recurrence)
+function weeksBetween(fromDateStr, toDateStr){
+  const from = parseDateStr(fromDateStr), to = parseDateStr(toDateStr);
+  // align both to the Sunday of their week so partial weeks don't skew the count
+  const fromSun = new Date(from); fromSun.setDate(from.getDate() - from.getDay());
+  const toSun = new Date(to); toSun.setDate(to.getDate() - to.getDay());
+  return Math.round((toSun - fromSun) / (7*24*60*60*1000));
+}
+
+function eventOccursOn(e, dateStr){
+  if(dateStr < e.date) return false;
+  const weekday = parseDateStr(dateStr).getDay();
+  switch(e.recurrence){
+    case 'weekly':
+      return !!(e.days && e.days[weekday]);
+    case 'biweekly':
+      return !!(e.days && e.days[weekday]) && (weeksBetween(e.date, dateStr) % 2 === 0);
+    case 'monthly':
+      return parseDateStr(dateStr).getDate() === parseDateStr(e.date).getDate();
+    default:
+      return dateStr === e.date;
+  }
+}
+function eventsOn(dateStr){ return state.events.filter(e => eventOccursOn(e, dateStr)); }
+
 /* =========================================================
    RENDER: SIDEBAR
    ========================================================= */
 const CLASS_COLOR_PALETTE = ['#e3a63f','#9c7fb3','#4c9a5b','#5b8fd1','#d1495b','#3fae9c'];
+const ORG_COLOR_PALETTE = ['#e3a63f','#5b8fd1','#d1495b','#4c9a5b','#9c7fb3','#3fae9c','#c97b3d','#5c7ab0'];
 
 function renderSidebar(){
   const list = document.getElementById('classNavList');
@@ -308,7 +350,7 @@ function renderHome(){
             ${classesToday.length===0 ? `<div class="empty-note">No classes marked for today.</div>` : classesToday.map(c => {
               const weekday = parseDateStr(today).getDay();
               const todaysMeetings = (c.meetings||[]).filter(m => m.days && m.days[weekday]);
-              const label = todaysMeetings.map(m => `${escapeHtml(m.label||'Class')}${m.time?' '+escapeHtml(m.time):''}`).join(', ');
+              const label = todaysMeetings.map(m => `${escapeHtml(m.label||'Class')}${meetingTimeLabel(m)?' '+escapeHtml(meetingTimeLabel(m)):''}`).join(', ');
               return `<div class="row">🎓 ${escapeHtml(c.name)} ${label?`<span class="row-tag">— ${label}</span>`:''}</div>`;
             }).join('')}
           </div>
@@ -355,6 +397,7 @@ function renderClass(classId){
   const collapsed = !!ui.collapsed[classId];
   const miniCollapsed = !!ui.miniCalCollapsed[classId];
   const todos = classTodos(classId).sort((a,b) => (a.dueDate||'9999').localeCompare(b.dueDate||'9999'));
+  const quizzes = classQuizzes(classId);
   const side = (state.settings.notesCalSide === 'left') ? 'flip' : '';
   const links = c.links || [];
   const meetings = c.meetings || [];
@@ -370,30 +413,37 @@ function renderClass(classId){
       </div>
       <div class="sub">
         ${c.subtitle ? escapeHtml(c.subtitle) : ''}
-        ${meetings.map(m => ` · ${escapeHtml(m.label||'Class')}${m.time?' '+escapeHtml(m.time):''} (${daysShort(m.days)})`).join('')}
+        ${meetings.map(m => ` · ${escapeHtml(m.label||'Class')}${meetingTimeLabel(m) ? ' '+escapeHtml(meetingTimeLabel(m)) : ''} (${daysShort(m.days)})`).join('')}
         ${links.map(l => ` · <a href="${escapeHtml(l.url)}" target="_blank" rel="noopener">${escapeHtml(l.label||'Link')}</a>`).join('')}
         ${!c.subtitle && meetings.length===0 && links.length===0 ? `<span style="opacity:.7;">No details yet — click "Edit details" to add meeting times and links.</span>` : ''}
       </div>
     </div>
 
-    <!-- COLLAPSIBLE TODO (sits normally at the top, does not follow scroll) -->
-    <section class="panel todo-panel ${collapsed?'collapsed':''}" id="classTodoPanel">
-      <div class="panel-header">
-        <h3>To-do for ${escapeHtml(c.name)}</h3>
-        <button class="icon-btn" data-action="toggle-collapse" data-id="${classId}">${collapsed ? '▸ Expand' : '▾ Collapse'}</button>
-      </div>
-      <form class="todo-add-row" id="classTodoForm">
-        <input class="t-text" type="text" name="text" placeholder="Assignment name..." required>
-        <input class="t-date" type="date" name="dueDate">
-      </form>
-      <div class="link-inputs-wrap">
-        ${linkInputsHtml('classTodoLinks', [''])}
-      </div>
-      <button class="btn gold todo-add-btn" type="submit" form="classTodoForm">Add</button>
-      <div class="todo-list">
-        ${todos.length ? todos.map(t => todoItemHtml(t,false)).join('') : `<div class="empty-note">No assignments yet — add one above.</div>`}
-      </div>
-    </section>
+    <!-- TO-DO + QUIZ/EXAM, side by side; to-do gets more room -->
+    <div class="todo-quiz-row">
+      <section class="panel todo-panel ${collapsed?'collapsed':''}" id="classTodoPanel">
+        <div class="panel-header">
+          <h3>To-do</h3>
+          <div class="panel-header-actions">
+            <button class="btn small gold" type="button" data-action="open-add-todo" data-classid="${classId}">+ Add</button>
+            <button class="icon-btn" data-action="toggle-collapse" data-id="${classId}">${collapsed ? '▸' : '▾'}</button>
+          </div>
+        </div>
+        <div class="todo-list">
+          ${todos.length ? todos.map(t => todoItemHtml(t,false)).join('') : `<div class="empty-note">No assignments yet — add one above.</div>`}
+        </div>
+      </section>
+
+      <section class="panel quiz-panel">
+        <div class="panel-header">
+          <h3>Quizzes &amp; exams</h3>
+          <button class="btn small gold" type="button" data-action="open-add-quiz" data-classid="${classId}">+ Add</button>
+        </div>
+        <div class="quiz-list">
+          ${quizzes.length ? quizzes.map(q => quizItemHtml(q)).join('') : `<div class="empty-note">Nothing scheduled — add one above.</div>`}
+        </div>
+      </section>
+    </div>
 
     <!-- NOTES -->
     <section class="panel">
@@ -456,19 +506,6 @@ function renderClass(classId){
       </div>
     </section>
   `;
-
-  wireLinkInputs('classTodoLinks');
-
-  document.getElementById('classTodoForm').addEventListener('submit', e => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    const text = fd.get('text').trim();
-    if(!text) return;
-    const links = collectLinkInputs('classTodoLinks');
-    state.todos.push({ id: uid(), classId, text, dueDate: fd.get('dueDate')||'', links, done:false });
-    saveState();
-    render();
-  });
 
   // notes date picker
   document.getElementById('notesDateInput').addEventListener('change', e => {
@@ -570,6 +607,7 @@ function refreshMiniCal(classId){
 function todoItemHtml(t, showClassTag){
   const cls = t.classId ? getClass(t.classId) : null;
   const links = t.links && t.links.length ? t.links : (t.link ? [t.link] : []);
+  const tagStyle = cls ? `style="background:${cls.color}22;color:${cls.color};border:1px solid ${cls.color}55;"` : '';
   return `
     <div class="todo-item ${t.done?'done':''}" data-id="${t.id}">
       <button class="check-btn" data-action="toggle-todo" data-id="${t.id}">✓</button>
@@ -578,9 +616,26 @@ function todoItemHtml(t, showClassTag){
         <div class="t-meta">
           ${t.dueDate ? `<span>Due ${niceDate(t.dueDate)}</span>` : ''}
           ${links.map((l,i) => `<a href="${escapeHtml(l)}" target="_blank" rel="noopener">${links.length>1 ? `Link ${i+1}` : 'Open link'} ↗</a>`).join('')}
-          ${showClassTag && cls ? `<span class="t-class-tag">${escapeHtml(cls.name)}</span>` : ''}
+          ${showClassTag && cls ? `<span class="t-class-tag" ${tagStyle}>${escapeHtml(cls.name)}</span>` : ''}
         </div>
       </div>
+    </div>
+  `;
+}
+
+/* =========================================================
+   QUIZ / EXAM ITEM HTML
+   ========================================================= */
+function quizItemHtml(q){
+  return `
+    <div class="quiz-item" data-id="${q.id}">
+      <div class="t-text">${escapeHtml(q.title)}</div>
+      <div class="t-meta">
+        ${q.date ? `<span>${niceDate(q.date)}</span>` : ''}
+        ${q.time ? `<span>${escapeHtml(q.time)}</span>` : ''}
+        ${q.link ? `<a href="${escapeHtml(q.link)}" target="_blank" rel="noopener">Open link ↗</a>` : ''}
+      </div>
+      ${q.topics ? `<div class="q-topics">${escapeHtml(q.topics)}</div>` : ''}
     </div>
   `;
 }
@@ -630,6 +685,894 @@ function collectLinkInputs(containerId){
 }
 
 /* =========================================================
+   CALENDAR RENDERING (shared by home + mini-cal)
+   opts: { small, todayStr, selected, classId }
+   ========================================================= */
+function calendarHtml(year, month, opts){
+  opts = opts || {};
+  const firstOfMonth = new Date(year, month, 1);
+  const startWeekday = firstOfMonth.getDay();
+  const daysInMonth = new Date(year, month+1, 0).getDate();
+  const daysInPrevMonth = new Date(year, month, 0).getDate();
+
+  const cells = [];
+  // leading days from previous month
+  for(let i=0;i<startWeekday;i++){
+    const dayNum = daysInPrevMonth - startWeekday + 1 + i;
+    const d = new Date(year, month-1, dayNum);
+    cells.push({ dateStr: toDateStr(d), dayNum, otherMonth: true });
+  }
+  // this month
+  for(let d=1; d<=daysInMonth; d++){
+    const dt = new Date(year, month, d);
+    cells.push({ dateStr: toDateStr(dt), dayNum: d, otherMonth: false });
+  }
+  // trailing days to complete final week row
+  while(cells.length % 7 !== 0){
+    const idx = cells.length - (startWeekday + daysInMonth);
+    const d = new Date(year, month+1, idx+1);
+    cells.push({ dateStr: toDateStr(d), dayNum: d.getDate(), otherMonth: true });
+  }
+
+  const dow = DOW_LABELS.map(l => `<div class="cal-dow">${l}</div>`).join('');
+
+  const dayCells = cells.map(cell => {
+    const isToday = cell.dateStr === opts.todayStr;
+    const isSelected = opts.selected && cell.dateStr === opts.selected;
+    const dots = dotsHtml(cell.dateStr, opts);
+
+    const clickAction = opts.small ? 'mini-cal-pick' : 'open-day';
+    const classIdAttr = opts.classId ? `data-classid="${opts.classId}"` : '';
+
+    return `<div class="cal-day ${cell.otherMonth?'other-month':''} ${isToday?'today':''} ${isSelected?'selected':''}"
+                 data-date="${cell.dateStr}" data-action="${clickAction}" ${classIdAttr}>
+              <span class="cal-daynum">${cell.dayNum}</span>
+              <span class="cal-dots">${dots}</span>
+            </div>`;
+  }).join('');
+
+  return `<div class="cal-grid">${dow}${dayCells}</div>`;
+}
+
+// builds the little colored dots under a calendar day, color-coded per class/org
+function dotsHtml(dateStr, opts){
+  const dots = [];
+
+  const todoColors = new Set();
+  todosDueOn(dateStr).forEach(t => todoColors.add(t.classId ? classColorFor(t.classId) : '#624374'));
+  todoColors.forEach(color => dots.push(`<span class="cal-dot" style="background:${color}"></span>`));
+
+  const evColors = new Set();
+  eventsOn(dateStr).forEach(e => evColors.add(e.orgId && getOrg(e.orgId) ? getOrg(e.orgId).color : '#e3a63f'));
+  evColors.forEach(color => dots.push(`<span class="cal-dot" style="background:${color}"></span>`));
+
+  if(!opts.small){
+    const quizColors = new Set();
+    quizzesOn(dateStr).forEach(q => quizColors.add(classColorFor(q.classId)));
+    quizColors.forEach(color => dots.push(`<span class="cal-dot cal-dot-ring" style="background:${color}"></span>`));
+
+    const classColors = new Set();
+    classesMeetingOn(dateStr).forEach(c => classColors.add(c.color || '#cdb9dc'));
+    classColors.forEach(color => dots.push(`<span class="cal-dot cal-dot-soft" style="background:${color}"></span>`));
+  }
+
+  return dots.slice(0, 8).join('');
+}
+
+/* =========================================================
+   DAY MODAL (click a day on the month calendar)
+   ========================================================= */
+function openDayModal(dateStr){
+  const evs = eventsOn(dateStr);
+  const dues = todosDueOn(dateStr);
+  const classesOn = classesMeetingOn(dateStr);
+
+  showModal(`
+    <h3>${niceDate(dateStr)}</h3>
+
+    <div class="day-modal-section">
+      <h4>Events</h4>
+      <div class="day-modal-list">
+        ${evs.length ? evs.map(e => { const org = e.orgId ? getOrg(e.orgId) : null; return `<div class="row" style="background:#faf8fc;border:1px solid #ede6f2;border-radius:10px;padding:8px 10px;">
+          <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${org?org.color:'#e3a63f'};margin-right:6px;"></span>${escapeHtml(e.title)}
+          ${org ? `<span class="row-tag">— ${escapeHtml(org.name)}</span>` : ''}
+          ${e.recurrence && e.recurrence!=='none' ? `<span class="row-tag">· ${e.recurrence==='weekly'?'Weekly':e.recurrence==='biweekly'?'Biweekly':'Monthly'}</span>` : ''}
+          <button class="icon-btn" style="float:right;color:var(--red);" data-action="delete-event" data-id="${e.id}" data-date="${dateStr}">✕</button></div>`; }).join('') : `<div class="empty-note">No events.</div>`}
+      </div>
+    </div>
+
+    <div class="day-modal-section">
+      <h4>Due</h4>
+      <div class="day-modal-list">
+        ${dues.length ? dues.map(t => `<div class="row" style="background:#faf8fc;border:1px solid #ede6f2;border-radius:10px;padding:8px 10px;">
+          📌 ${escapeHtml(t.text)} ${t.classId?`<span class="row-tag">— ${escapeHtml(getClass(t.classId)?.name||'')}</span>`:''}
+        </div>`).join('') : `<div class="empty-note">Nothing due.</div>`}
+      </div>
+    </div>
+
+    <div class="day-modal-section">
+      <h4>Classes meeting</h4>
+      <div class="day-modal-list">
+        ${classesOn.length ? classesOn.map(c => {
+          const weekday = parseDateStr(dateStr).getDay();
+          const todaysMeetings = (c.meetings||[]).filter(m => m.days && m.days[weekday]);
+          const label = todaysMeetings.map(m => `${escapeHtml(m.label||'Class')}${meetingTimeLabel(m)?' '+escapeHtml(meetingTimeLabel(m)):''}`).join(', ');
+          return `<div class="row" style="background:#faf8fc;border:1px solid #ede6f2;border-radius:10px;padding:8px 10px;">
+          🎓 ${escapeHtml(c.name)} ${label?`<span class="row-tag">— ${label}</span>`:''}
+          <button class="btn small ghost" style="float:right;" data-action="go-class-notes" data-id="${c.id}" data-date="${dateStr}">Open notes</button>
+        </div>`;
+        }).join('') : `<div class="empty-note">No classes meet this day.</div>`}
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn ghost" data-action="close-modal">Close</button>
+    </div>
+  `);
+}
+
+/* =========================================================
+   EDIT CLASS DETAILS MODAL
+   (creation itself happens inline in the sidebar — this modal
+   is for filling in subtitle, meeting times, and links)
+   ========================================================= */
+function openEditClassModal(classId){
+  const c = getClass(classId);
+  if(!c) return;
+
+  let editingLinks = (c.links||[]).map(l => ({...l}));
+  if(editingLinks.length === 0) editingLinks.push({ label:'', url:'' });
+  let editingMeetings = (c.meetings||[]).map(m => ({ ...m, days: [...(m.days||[false,false,false,false,false,false,false])] }));
+  if(editingMeetings.length === 0) editingMeetings.push({ label:'', days:[false,false,false,false,false,false,false], time:'', endTime:'' });
+
+  showModal(`
+    <h3>Edit class details</h3>
+    <form id="editClassForm">
+      <div class="form-row">
+        <label>Class name</label>
+        <input type="text" name="name" value="${escapeHtml(c.name)}" required>
+      </div>
+      <div class="form-row">
+        <label>Subtitle</label>
+        <input type="text" name="subtitle" value="${escapeHtml(c.subtitle||'')}" placeholder="e.g. Embedded Systems I">
+      </div>
+
+      <div class="form-row">
+        <label>Meeting times</label>
+        <div id="meetingsContainer"></div>
+        <button type="button" class="btn small ghost" id="addMeetingBtn">+ Add meeting time</button>
+      </div>
+
+      <div class="form-row">
+        <label>Links</label>
+        <div id="linksContainer"></div>
+        <button type="button" class="btn small ghost" id="addLinkBtn">+ Add another link</button>
+      </div>
+
+      <div class="form-row">
+        <label>Tab color</label>
+        <input type="color" name="color" value="${c.color||'#e3a63f'}">
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" data-action="close-modal">Cancel</button>
+        <button type="submit" class="btn gold">Save</button>
+      </div>
+    </form>
+  `);
+
+  function renderMeetingsRows(){
+    const container = document.getElementById('meetingsContainer');
+    container.innerHTML = editingMeetings.map((m,i) => `
+      <div class="builder-row">
+        <input type="text" class="meeting-label" data-idx="${i}" placeholder="e.g. Lecture, Lab" value="${escapeHtml(m.label||'')}">
+        <div class="days-row">
+          ${DOW_LABELS.map((l,d)=>`<button type="button" class="day-chip ${m.days[d]?'on':''}" data-idx="${i}" data-day="${d}">${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d]}</button>`).join('')}
+        </div>
+        <div class="time-range">
+          <input type="time" class="meeting-time" data-idx="${i}" value="${escapeHtml(m.time||'')}">
+          <span class="time-range-sep">to</span>
+          <input type="time" class="meeting-endtime" data-idx="${i}" value="${escapeHtml(m.endTime||'')}">
+        </div>
+        <span class="weekly-tag">Weekly</span>
+        <button type="button" class="icon-btn remove-row-btn" data-idx="${i}" title="Remove">✕</button>
+      </div>
+    `).join('');
+    container.querySelectorAll('.meeting-label').forEach(inp => inp.addEventListener('input', () => { editingMeetings[Number(inp.dataset.idx)].label = inp.value; }));
+    container.querySelectorAll('.meeting-time').forEach(inp => inp.addEventListener('input', () => { editingMeetings[Number(inp.dataset.idx)].time = inp.value; }));
+    container.querySelectorAll('.meeting-endtime').forEach(inp => inp.addEventListener('input', () => { editingMeetings[Number(inp.dataset.idx)].endTime = inp.value; }));
+    container.querySelectorAll('.day-chip').forEach(chip => chip.addEventListener('click', () => {
+      const i = Number(chip.dataset.idx), d = Number(chip.dataset.day);
+      editingMeetings[i].days[d] = !editingMeetings[i].days[d];
+      chip.classList.toggle('on');
+    }));
+    container.querySelectorAll('.remove-row-btn').forEach(btn => btn.addEventListener('click', () => {
+      editingMeetings.splice(Number(btn.dataset.idx), 1);
+      if(editingMeetings.length === 0) editingMeetings.push({ label:'', days:[false,false,false,false,false,false,false], time:'', endTime:'' });
+      renderMeetingsRows();
+    }));
+  }
+
+  function renderLinksRows(){
+    const container = document.getElementById('linksContainer');
+    container.innerHTML = editingLinks.map((l,i) => `
+      <div class="builder-row">
+        <input type="text" class="link-label" data-idx="${i}" placeholder="e.g. Website, Discord" value="${escapeHtml(l.label||'')}">
+        <input type="url" class="link-url" data-idx="${i}" placeholder="https://..." value="${escapeHtml(l.url||'')}">
+        <button type="button" class="icon-btn remove-row-btn" data-idx="${i}" title="Remove">✕</button>
+      </div>
+    `).join('');
+    container.querySelectorAll('.link-label').forEach(inp => inp.addEventListener('input', () => { editingLinks[Number(inp.dataset.idx)].label = inp.value; }));
+    container.querySelectorAll('.link-url').forEach(inp => inp.addEventListener('input', () => { editingLinks[Number(inp.dataset.idx)].url = inp.value; }));
+    container.querySelectorAll('.remove-row-btn').forEach(btn => btn.addEventListener('click', () => {
+      editingLinks.splice(Number(btn.dataset.idx), 1);
+      if(editingLinks.length === 0) editingLinks.push({ label:'', url:'' });
+      renderLinksRows();
+    }));
+  }
+
+  renderMeetingsRows();
+  renderLinksRows();
+  document.getElementById('addMeetingBtn').addEventListener('click', () => {
+    editingMeetings.push({ label:'', days:[false,false,false,false,false,false,false], time:'', endTime:'' });
+    renderMeetingsRows();
+  });
+  document.getElementById('addLinkBtn').addEventListener('click', () => {
+    editingLinks.push({ label:'', url:'' });
+    renderLinksRows();
+  });
+
+  document.getElementById('editClassForm').addEventListener('submit', e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    c.name = fd.get('name').trim() || c.name;
+    c.subtitle = fd.get('subtitle').trim();
+    c.color = fd.get('color');
+    c.meetings = editingMeetings
+      .filter(m => (m.label && m.label.trim()) || m.days.some(Boolean) || m.time)
+      .map(m => ({ label: (m.label||'').trim(), days: m.days, time: m.time||'', endTime: m.endTime||'' }));
+    c.links = editingLinks
+      .filter(l => l.url && l.url.trim())
+      .map(l => ({ label: (l.label||'').trim() || 'Link', url: l.url.trim() }));
+    saveState();
+    closeModal();
+    render();
+  });
+}
+
+/* =========================================================
+   EDIT TODO MODAL
+   ========================================================= */
+function openEditTodoModal(todoId){
+  const t = state.todos.find(x => x.id === todoId);
+  if(!t) return;
+  const links = (t.links && t.links.length) ? t.links : (t.link ? [t.link] : []);
+
+  showModal(`
+    <h3>Edit task</h3>
+    <form id="editTodoForm">
+      <div class="form-row">
+        <label>Assignment name</label>
+        <input type="text" name="text" value="${escapeHtml(t.text)}" required>
+      </div>
+      <div class="form-row">
+        <label>Due date</label>
+        <input type="date" name="dueDate" value="${t.dueDate||''}">
+      </div>
+      <div class="form-row">
+        <label>Links</label>
+        ${linkInputsHtml('editTodoLinks', links)}
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" data-action="close-modal">Cancel</button>
+        <button type="submit" class="btn gold">Save</button>
+      </div>
+    </form>
+  `);
+
+  wireLinkInputs('editTodoLinks');
+
+  document.getElementById('editTodoForm').addEventListener('submit', e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    t.text = fd.get('text').trim() || t.text;
+    t.dueDate = fd.get('dueDate') || '';
+    t.links = collectLinkInputs('editTodoLinks');
+    saveState();
+    closeModal();
+    render();
+  });
+}
+
+/* =========================================================
+   ADD TODO MODAL (class page "+ Add" button)
+   ========================================================= */
+function openAddTodoModal(classId){
+  showModal(`
+    <h3>Add assignment</h3>
+    <form id="addTodoForm">
+      <div class="form-row">
+        <label>Assignment name</label>
+        <input type="text" name="text" placeholder="e.g. Homework 3" required>
+      </div>
+      <div class="form-row">
+        <label>Due date</label>
+        <input type="date" name="dueDate">
+      </div>
+      <div class="form-row">
+        <label>Links</label>
+        ${linkInputsHtml('addTodoLinks', [''])}
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" data-action="close-modal">Cancel</button>
+        <button type="submit" class="btn gold">Add</button>
+      </div>
+    </form>
+  `);
+  wireLinkInputs('addTodoLinks');
+  document.getElementById('addTodoForm').addEventListener('submit', e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const text = fd.get('text').trim();
+    if(!text) return;
+    const links = collectLinkInputs('addTodoLinks');
+    state.todos.push({ id: uid(), classId, text, dueDate: fd.get('dueDate')||'', links, done:false });
+    saveState();
+    closeModal();
+    render();
+  });
+}
+
+/* =========================================================
+   ADD / EDIT QUIZ & EXAM MODALS
+   ========================================================= */
+function openAddQuizModal(classId){
+  showModal(`
+    <h3>Add quiz / exam</h3>
+    <form id="addQuizForm">
+      <div class="form-row">
+        <label>Title</label>
+        <input type="text" name="title" placeholder="e.g. Midterm 1" required>
+      </div>
+      <div class="form-row">
+        <label>Date</label>
+        <input type="date" name="date">
+      </div>
+      <div class="form-row">
+        <label>Time</label>
+        <input type="time" name="time">
+      </div>
+      <div class="form-row">
+        <label>What's covered</label>
+        <textarea name="topics" rows="3" placeholder="Chapters 1–4, lecture notes on..."></textarea>
+      </div>
+      <div class="form-row">
+        <label>Link (optional)</label>
+        <input type="url" name="link" placeholder="https://...">
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" data-action="close-modal">Cancel</button>
+        <button type="submit" class="btn gold">Add</button>
+      </div>
+    </form>
+  `);
+  document.getElementById('addQuizForm').addEventListener('submit', e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const title = fd.get('title').trim();
+    if(!title) return;
+    state.quizzes.push({
+      id: uid(), classId, title,
+      date: fd.get('date')||'', time: fd.get('time')||'',
+      topics: (fd.get('topics')||'').trim(), link: (fd.get('link')||'').trim(),
+    });
+    saveState();
+    closeModal();
+    render();
+  });
+}
+
+function openEditQuizModal(quizId){
+  const q = state.quizzes.find(x => x.id === quizId);
+  if(!q) return;
+  showModal(`
+    <h3>Edit quiz / exam</h3>
+    <form id="editQuizForm">
+      <div class="form-row">
+        <label>Title</label>
+        <input type="text" name="title" value="${escapeHtml(q.title)}" required>
+      </div>
+      <div class="form-row">
+        <label>Date</label>
+        <input type="date" name="date" value="${q.date||''}">
+      </div>
+      <div class="form-row">
+        <label>Time</label>
+        <input type="time" name="time" value="${q.time||''}">
+      </div>
+      <div class="form-row">
+        <label>What's covered</label>
+        <textarea name="topics" rows="3">${escapeHtml(q.topics||'')}</textarea>
+      </div>
+      <div class="form-row">
+        <label>Link (optional)</label>
+        <input type="url" name="link" value="${escapeHtml(q.link||'')}" placeholder="https://...">
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" data-action="close-modal">Cancel</button>
+        <button type="submit" class="btn gold">Save</button>
+      </div>
+    </form>
+  `);
+  document.getElementById('editQuizForm').addEventListener('submit', e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    q.title = fd.get('title').trim() || q.title;
+    q.date = fd.get('date')||'';
+    q.time = fd.get('time')||'';
+    q.topics = (fd.get('topics')||'').trim();
+    q.link = (fd.get('link')||'').trim();
+    saveState();
+    closeModal();
+    render();
+  });
+}
+
+/* =========================================================
+   ADD EVENT MODAL
+   supports: organization/group (with color, add/rename/delete),
+   and recurrence (weekly / biweekly / monthly + day-of-week)
+   ========================================================= */
+function openAddEventModal(prefillDate){
+  const initialDate = prefillDate || todayStr();
+  let selectedOrgId = null;
+  let renamingOrgId = null;
+  let selectedDays = [false,false,false,false,false,false,false];
+  selectedDays[parseDateStr(initialDate).getDay()] = true;
+
+  showModal(`
+    <h3>Add an event</h3>
+    <form id="addEventForm">
+      <div class="form-row">
+        <label>Title</label>
+        <input type="text" name="title" placeholder="e.g. GBM, Retreat, Food Fest" required>
+      </div>
+      <div class="form-row">
+        <label>Date</label>
+        <input type="date" name="date" value="${initialDate}" required>
+      </div>
+
+      <div class="form-row">
+        <label>Organization / group</label>
+        <select id="eventOrgSelect">
+          <option value="">No organization</option>
+          ${state.orgs.map(o => `<option value="${o.id}">${escapeHtml(o.name)}</option>`).join('')}
+        </select>
+        <div id="orgManager" class="org-manager"></div>
+        <div class="org-row org-add-row">
+          <input type="color" id="newOrgColor" value="${ORG_COLOR_PALETTE[state.orgs.length % ORG_COLOR_PALETTE.length]}" title="Color">
+          <input type="text" id="newOrgNameInput" placeholder="+ Add organization...">
+          <button type="button" class="btn small ghost" id="addOrgBtn">Add</button>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label>Repeats</label>
+        <select id="eventRecurrenceSelect">
+          <option value="none">Does not repeat</option>
+          <option value="weekly">Weekly</option>
+          <option value="biweekly">Every 2 weeks</option>
+          <option value="monthly">Monthly (same date)</option>
+        </select>
+      </div>
+      <div class="form-row" id="eventDaysRow" style="display:none;">
+        <label>Repeat on</label>
+        <div class="days-row" id="eventDaysChips">
+          ${DOW_LABELS.map((l,d)=>`<button type="button" class="day-chip ${selectedDays[d]?'on':''}" data-day="${d}">${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d]}</button>`).join('')}
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" data-action="close-modal">Cancel</button>
+        <button type="submit" class="btn gold">Add event</button>
+      </div>
+    </form>
+  `);
+
+  function renderOrgManager(){
+    const wrap = document.getElementById('orgManager');
+    if(!state.orgs.length){ wrap.innerHTML = ''; return; }
+    wrap.innerHTML = state.orgs.map(o => {
+      if(renamingOrgId === o.id){
+        return `<div class="org-row" data-id="${o.id}">
+          <input type="color" class="org-color-input" data-id="${o.id}" value="${o.color}" title="Color">
+          <input type="text" class="inline-edit-input org-rename-input" value="${escapeHtml(o.name)}" style="flex:1;padding:6px 8px;">
+        </div>`;
+      }
+      return `<div class="org-row" data-id="${o.id}" title="Right-click to rename">
+        <input type="color" class="org-color-input" data-id="${o.id}" value="${o.color}" title="Color">
+        <span class="org-name" data-id="${o.id}">${escapeHtml(o.name)}</span>
+        <button type="button" class="icon-btn org-del-btn" data-id="${o.id}" title="Delete">✕</button>
+      </div>`;
+    }).join('');
+
+    wrap.querySelectorAll('.org-color-input').forEach(inp => inp.addEventListener('input', () => {
+      const org = getOrg(inp.dataset.id);
+      if(org){ org.color = inp.value; saveState(); }
+    }));
+    wrap.querySelectorAll('.org-del-btn').forEach(btn => btn.addEventListener('click', () => {
+      state.orgs = state.orgs.filter(o => o.id !== btn.dataset.id);
+      if(selectedOrgId === btn.dataset.id) selectedOrgId = null;
+      saveState();
+      renderOrgManager();
+      syncOrgSelect();
+    }));
+    wrap.querySelectorAll('.org-name').forEach(span => span.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      renamingOrgId = span.dataset.id;
+      renderOrgManager();
+    }));
+    const renameInput = wrap.querySelector('.org-rename-input');
+    if(renameInput){
+      renameInput.focus(); renameInput.select();
+      const commit = () => {
+        const org = getOrg(renamingOrgId);
+        const val = renameInput.value.trim();
+        if(org && val) org.name = val;
+        renamingOrgId = null;
+        saveState();
+        renderOrgManager();
+        syncOrgSelect();
+      };
+      renameInput.addEventListener('keydown', e => { if(e.key==='Enter') commit(); else if(e.key==='Escape'){ renamingOrgId=null; renderOrgManager(); } });
+      renameInput.addEventListener('blur', commit);
+    }
+  }
+
+  function syncOrgSelect(){
+    const sel = document.getElementById('eventOrgSelect');
+    sel.innerHTML = `<option value="">No organization</option>${state.orgs.map(o => `<option value="${o.id}">${escapeHtml(o.name)}</option>`).join('')}`;
+    sel.value = state.orgs.find(o => o.id === selectedOrgId) ? selectedOrgId : '';
+  }
+
+  renderOrgManager();
+
+  document.getElementById('eventOrgSelect').addEventListener('change', e => { selectedOrgId = e.target.value || null; });
+
+  document.getElementById('addOrgBtn').addEventListener('click', () => {
+    const nameInput = document.getElementById('newOrgNameInput');
+    const colorInput = document.getElementById('newOrgColor');
+    const name = nameInput.value.trim();
+    if(!name) return;
+    const org = { id: uid(), name, color: colorInput.value };
+    state.orgs.push(org);
+    selectedOrgId = org.id;
+    saveState();
+    renderOrgManager();
+    syncOrgSelect();
+    nameInput.value = '';
+    colorInput.value = ORG_COLOR_PALETTE[state.orgs.length % ORG_COLOR_PALETTE.length];
+  });
+  document.getElementById('newOrgNameInput').addEventListener('keydown', e => {
+    if(e.key === 'Enter'){ e.preventDefault(); document.getElementById('addOrgBtn').click(); }
+  });
+
+  // recurrence
+  const recurrenceSelect = document.getElementById('eventRecurrenceSelect');
+  const daysRow = document.getElementById('eventDaysRow');
+  recurrenceSelect.addEventListener('change', () => {
+    daysRow.style.display = (recurrenceSelect.value === 'weekly' || recurrenceSelect.value === 'biweekly') ? '' : 'none';
+  });
+  document.getElementById('eventDaysChips').querySelectorAll('.day-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const d = Number(chip.dataset.day);
+      selectedDays[d] = !selectedDays[d];
+      chip.classList.toggle('on');
+    });
+  });
+
+  document.getElementById('addEventForm').addEventListener('submit', e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const recurrence = recurrenceSelect.value;
+    state.events.push(normalizeEvent({
+      id: uid(),
+      title: fd.get('title').trim(),
+      date: fd.get('date'),
+      orgId: selectedOrgId,
+      recurrence,
+      days: (recurrence === 'weekly' || recurrence === 'biweekly') ? [...selectedDays] : [false,false,false,false,false,false,false],
+    }));
+    saveState();
+    closeModal();
+    render();
+  });
+}
+
+/* =========================================================
+   MODAL / CONTEXT MENU PLUMBING
+   ========================================================= */
+function showModal(html){
+  document.getElementById('modalBody').innerHTML = html;
+  document.getElementById('modalOverlay').classList.remove('hidden');
+}
+function closeModal(){
+  document.getElementById('modalOverlay').classList.add('hidden');
+}
+
+let pendingItemId = null;
+let pendingItemType = 'todo'; // 'todo' | 'quiz'
+function showContextMenu(x, y, itemId, itemType){
+  pendingItemId = itemId;
+  pendingItemType = itemType || 'todo';
+  const menu = document.getElementById('contextMenu');
+  menu.querySelector('#ctxEdit').textContent = pendingItemType==='quiz' ? '✏️ Edit' : '✏️ Edit task';
+  menu.querySelector('#ctxDelete').textContent = pendingItemType==='quiz' ? '🗑 Delete' : '🗑 Delete task';
+  menu.classList.remove('hidden');
+  // clamp so the menu never renders off-screen (matters most on mobile)
+  const rect = menu.getBoundingClientRect();
+  const maxX = window.innerWidth - rect.width - 8;
+  const maxY = window.innerHeight - rect.height - 8;
+  menu.style.left = Math.max(8, Math.min(x, maxX)) + 'px';
+  menu.style.top = Math.max(8, Math.min(y, maxY)) + 'px';
+}
+function hideContextMenu(){
+  document.getElementById('contextMenu').classList.add('hidden');
+  pendingItemId = null;
+}
+
+/* ---------- day-cell right-click menu: quick add/delete event ---------- */
+function showDayContextMenu(x, y, dateStr){
+  const menu = document.getElementById('dayContextMenu');
+  const evs = eventsOn(dateStr);
+  menu.innerHTML = `
+    <button type="button" data-action="ctx-add-event" data-date="${dateStr}">+ Add event on ${niceDate(dateStr)}</button>
+    ${evs.length ? evs.map(e => `<button type="button" class="ctx-danger" data-action="ctx-delete-event" data-id="${e.id}">🗑 Remove "${escapeHtml(e.title)}"</button>`).join('') : ''}
+  `;
+  menu.classList.remove('hidden');
+  const rect = menu.getBoundingClientRect();
+  const maxX = window.innerWidth - rect.width - 8;
+  const maxY = window.innerHeight - rect.height - 8;
+  menu.style.left = Math.max(8, Math.min(x, maxX)) + 'px';
+  menu.style.top = Math.max(8, Math.min(y, maxY)) + 'px';
+}
+function hideDayContextMenu(){
+  const menu = document.getElementById('dayContextMenu');
+  if(menu) menu.classList.add('hidden');
+}
+
+/* =========================================================
+   MASTER RENDER
+   ========================================================= */
+function render(){
+  renderSidebar();
+  if(ui.view === 'class' && ui.classId){ renderClass(ui.classId); }
+  else { ui.view = 'home'; renderHome(); }
+}
+
+/* =========================================================
+   GLOBAL EVENT DELEGATION
+   (one set of listeners handles the whole re-rendered app)
+   ========================================================= */
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-action]');
+
+  // click outside modal closes it
+  if(e.target.id === 'modalOverlay'){ closeModal(); }
+  // click anywhere closes context menus (unless clicking their own buttons)
+  if(!e.target.closest('#contextMenu')){ hideContextMenu(); }
+  if(!e.target.closest('#dayContextMenu')){ hideDayContextMenu(); }
+
+  if(!el) return;
+  const action = el.dataset.action;
+
+  switch(action){
+    case 'open-add-todo': openAddTodoModal(el.dataset.classid); break;
+    case 'open-add-quiz': openAddQuizModal(el.dataset.classid); break;
+
+    case 'ctx-add-event':
+      hideDayContextMenu();
+      openAddEventModal(el.dataset.date);
+      break;
+    case 'ctx-delete-event':
+      hideDayContextMenu();
+      state.events = state.events.filter(x => x.id !== el.dataset.id);
+      saveState();
+      render();
+      break;
+
+    case 'go-class':
+      ui.view = 'class'; ui.classId = el.dataset.id; render(); break;
+
+    case 'delete-class': {
+      const c = getClass(el.dataset.id);
+      if(c && confirm(`Delete "${c.name}" and all its to-dos and notes?`)){
+        state.classes = state.classes.filter(x => x.id !== el.dataset.id);
+        state.todos = state.todos.filter(t => t.classId !== el.dataset.id);
+        state.quizzes = state.quizzes.filter(q => q.classId !== el.dataset.id);
+        state.notes = state.notes.filter(n => n.classId !== el.dataset.id);
+        if(ui.classId === el.dataset.id){ ui.view='home'; ui.classId=null; }
+        saveState(); render();
+      }
+      break;
+    }
+
+    case 'toggle-todo': {
+      const t = state.todos.find(x => x.id === el.dataset.id);
+      if(t){ t.done = !t.done; saveState(); render(); }
+      break;
+    }
+
+    case 'toggle-collapse':
+      ui.collapsed[el.dataset.id] = !ui.collapsed[el.dataset.id];
+      render();
+      break;
+
+    case 'toggle-minical':
+      ui.miniCalCollapsed[el.dataset.id] = !ui.miniCalCollapsed[el.dataset.id];
+      renderClass(el.dataset.id);
+      break;
+
+    case 'open-add-event': openAddEventModal(); break;
+    case 'delete-event': {
+      state.events = state.events.filter(x => x.id !== el.dataset.id);
+      saveState();
+      render();
+      openDayModal(el.dataset.date); // refresh modal with updated list
+      break;
+    }
+
+    case 'open-day': openDayModal(el.dataset.date); break;
+
+    case 'mini-cal-pick': {
+      const cid = el.dataset.classid;
+      ui.notesDate[cid] = el.dataset.date;
+      renderClass(cid);
+      break;
+    }
+
+    case 'go-class-notes':
+      ui.view = 'class'; ui.classId = el.dataset.id;
+      ui.notesDate[el.dataset.id] = el.dataset.date;
+      closeModal();
+      render();
+      break;
+
+    case 'flip-notes-cal':
+      state.settings.notesCalSide = state.settings.notesCalSide === 'left' ? 'right' : 'left';
+      saveState();
+      render();
+      break;
+
+    case 'home-cal-prev':
+      ui.homeCal.month--; if(ui.homeCal.month<0){ ui.homeCal.month=11; ui.homeCal.year--; }
+      render();
+      break;
+    case 'home-cal-next':
+      ui.homeCal.month++; if(ui.homeCal.month>11){ ui.homeCal.month=0; ui.homeCal.year++; }
+      render();
+      break;
+
+    case 'mini-cal-prev': {
+      const cid = el.dataset.classid;
+      const cur = ui.classCal[cid];
+      cur.month--; if(cur.month<0){ cur.month=11; cur.year--; }
+      renderClass(cid);
+      break;
+    }
+    case 'mini-cal-next': {
+      const cid = el.dataset.classid;
+      const cur = ui.classCal[cid];
+      cur.month++; if(cur.month>11){ cur.month=0; cur.year++; }
+      renderClass(cid);
+      break;
+    }
+
+    case 'edit-class': openEditClassModal(el.dataset.id); break;
+
+    case 'close-modal': closeModal(); break;
+  }
+});
+
+// right-click on a class tab -> rename it inline; right-click on a todo/quiz item -> edit/delete menu;
+// right-click on a calendar day -> quick add/delete event menu
+document.addEventListener('contextmenu', e => {
+  const classRow = e.target.closest('.class-nav-row');
+  if(classRow && classRow.dataset.id){
+    e.preventDefault();
+    ui.renamingClassId = classRow.dataset.id;
+    render();
+    return;
+  }
+  const item = e.target.closest('.todo-item, .quiz-item');
+  if(item){
+    e.preventDefault();
+    const type = item.classList.contains('quiz-item') ? 'quiz' : 'todo';
+    showContextMenu(e.pageX, e.pageY, item.dataset.id, type);
+    return;
+  }
+  const dayCell = e.target.closest('.cal-day');
+  if(dayCell && dayCell.dataset.date){
+    e.preventDefault();
+    showDayContextMenu(e.pageX, e.pageY, dayCell.dataset.date);
+  }
+});
+
+// long-press on a todo/quiz item -> same edit/delete menu, for mobile/touch
+let longPressTimer = null;
+let longPressFired = false;
+document.addEventListener('touchstart', e => {
+  const item = e.target.closest('.todo-item, .quiz-item');
+  if(!item) return;
+  const touch = e.touches[0];
+  longPressFired = false;
+  const type = item.classList.contains('quiz-item') ? 'quiz' : 'todo';
+  longPressTimer = setTimeout(() => {
+    longPressFired = true;
+    showContextMenu(touch.pageX, touch.pageY, item.dataset.id, type);
+  }, 500);
+}, { passive: true });
+document.addEventListener('touchmove', () => clearTimeout(longPressTimer));
+document.addEventListener('touchend', e => {
+  clearTimeout(longPressTimer);
+  if(longPressFired){ e.preventDefault(); longPressFired = false; } // swallow the click that follows the long-press
+});
+
+// drag-and-drop reordering of class tabs
+document.addEventListener('dragstart', e => {
+  const row = e.target.closest('.class-nav-row');
+  if(row && row.dataset.id){
+    e.dataTransfer.setData('text/plain', row.dataset.id);
+    e.dataTransfer.effectAllowed = 'move';
+    row.classList.add('dragging');
+  }
+});
+document.addEventListener('dragend', e => {
+  const row = e.target.closest('.class-nav-row');
+  if(row) row.classList.remove('dragging');
+});
+document.addEventListener('dragover', e => {
+  const row = e.target.closest('.class-nav-row');
+  if(row && row.dataset.id){ e.preventDefault(); row.classList.add('drag-over'); }
+});
+document.addEventListener('dragleave', e => {
+  const row = e.target.closest('.class-nav-row');
+  if(row) row.classList.remove('drag-over');
+});
+document.addEventListener('drop', e => {
+  const row = e.target.closest('.class-nav-row');
+  if(row && row.dataset.id){
+    e.preventDefault();
+    row.classList.remove('drag-over');
+    const draggedId = e.dataTransfer.getData('text/plain');
+    moveClass(draggedId, row.dataset.id);
+  }
+});
+document.getElementById('ctxEdit').addEventListener('click', () => {
+  const id = pendingItemId;
+  const type = pendingItemType;
+  hideContextMenu();
+  if(!id) return;
+  if(type === 'quiz') openEditQuizModal(id);
+  else openEditTodoModal(id);
+});
+document.getElementById('ctxDelete').addEventListener('click', () => {
+  if(pendingItemId){
+    if(pendingItemType === 'quiz'){ state.quizzes = state.quizzes.filter(q => q.id !== pendingItemId); }
+    else { state.todos = state.todos.filter(t => t.id !== pendingItemId); }
+    saveState();
+  }
+  hideContextMenu();
+  render();
+});
+
+document.getElementById('homeNavBtn').addEventListener('click', () => { ui.view='home'; render(); });
+document.getElementById('addClassBtn').addEventListener('click', () => { ui.addingClass = true; render(); });
+
+/* ---------------------------------------------------------
+   INIT
+   Rendering starts once firebase.auth().onAuthStateChanged
+   (above) fires and either shows the app or the sign-in screen.
+   --------------------------------------------------------- */========
    CALENDAR RENDERING (shared by home + mini-cal)
    opts: { small, todayStr, selected, classId }
    ========================================================= */
