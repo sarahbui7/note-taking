@@ -10,6 +10,7 @@
 
   --gold:          #e3a63f;   /* accent */
   --gold-soft:     #f2cd7e;
+  --gold-text:     #402d08;  /* auto-adjusted same-hue text for accent-colored buttons */
   --sidebar-accent: #f2cd7e;  /* auto-adjusted per background so sidebar links stay readable */
 
   --panel-bg:      #ffffff;
@@ -275,7 +276,7 @@ a{ color: var(--gold); }
   transition: filter .15s ease;
 }
 .btn:hover{ filter: brightness(1.1); }
-.btn.gold{ background: var(--gold); color: #402d08; }
+.btn.gold{ background: var(--gold); color: var(--gold-text); }
 .btn.ghost{
   background: transparent; color: var(--text-dim);
   border: 1px solid #e4dcec;

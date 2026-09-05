@@ -293,6 +293,14 @@ function applyTheme(){
   root.setProperty('--gold', accent);
   root.setProperty('--gold-soft', shadeColor(accent, 0.35));
 
+  // text on top of accent-colored buttons: same hue as the accent, pushed darker/lighter
+  // (same 75% lightness rule as the background text above) so it stays legible on the button
+  const accentHsl = hexToHsl(accent);
+  const goldTextColor = accentHsl.l >= 0.75
+    ? hslToHex(accentHsl.h, accentHsl.s, Math.max(0.16, accentHsl.l - 0.45))
+    : hslToHex(accentHsl.h, accentHsl.s, Math.min(0.88, accentHsl.l + 0.45));
+  root.setProperty('--gold-text', goldTextColor);
+
   // Settings/Sign out links (bottom-left) instead get the complementary hue of the background,
   // falling back to the default purple for greys/white/black
   const complementColor = s < 0.05 ? '#624374' : hslToHex(h + 180, Math.max(s, 0.55), 0.5);
