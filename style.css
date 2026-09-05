@@ -10,6 +10,7 @@
 
   --gold:          #e3a63f;   /* accent */
   --gold-soft:     #f2cd7e;
+  --sidebar-accent: #f2cd7e;  /* auto-adjusted per background so sidebar links stay readable */
 
   --panel-bg:      #ffffff;
   --panel-radius:  20px;
@@ -87,7 +88,7 @@ a{ color: var(--gold); }
   font-size: 12px; color: var(--text-onpurple-dim); margin-bottom: 4px;
   overflow-wrap: anywhere;
 }
-.sidebar-footer .auth-toggle{ color: var(--gold-soft); margin-top: 0; text-align:left; width:auto; }
+.sidebar-footer .auth-toggle{ color: var(--sidebar-accent); margin-top: 0; text-align:left; width:auto; }
 
 /* =========================================================
    APP LAYOUT
@@ -119,6 +120,16 @@ a{ color: var(--gold); }
   letter-spacing: 0.2px;
   color: var(--gold-soft);
 }
+.brand-mark-btn{
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  display: block;
+  text-align: left;
+}
+.brand-mark-btn:hover{ color: var(--gold); }
 
 .nav-list{
   display: flex;
@@ -373,6 +384,23 @@ a{ color: var(--gold); }
   grid-template-columns: repeat(7, 1fr);
   gap: 6px;
   margin-top: 12px;
+}
+/* multi-day (non-recurring) events render as a banner spanning the days they cover,
+   positioned in pixels (via JS) over the plain CSS grid above */
+.cal-grid-outer{ position: relative; }
+.cal-bars-layer{ position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+.cal-bar{
+  position: absolute;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  color: #fff;
+  padding: 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.12);
 }
 .cal-dow{
   text-align:center; font-size: 11.5px; font-weight:700;

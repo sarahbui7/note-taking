@@ -179,6 +179,7 @@ function pad2(n){ return n < 10 ? '0'+n : ''+n; }
 function toDateStr(d){ return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate()); }
 function todayStr(){ return toDateStr(new Date()); }
 function parseDateStr(s){ const [y,m,d] = s.split('-').map(Number); return new Date(y, m-1, d); }
+function addDays(dateStr, n){ const d = parseDateStr(dateStr); d.setDate(d.getDate() + n); return toDateStr(d); }
 function currentMonthCursor(){ const n = new Date(); return { year: n.getFullYear(), month: n.getMonth() }; }
 function niceDate(dateStr){
   if(!dateStr) return '';
@@ -220,13 +221,40 @@ function shadeColor(hex, percent){
   return '#' + [r,g,b].map(x => x.toString(16).padStart(2,'0')).join('');
 }
 
-// applies the user's chosen background color (with derived sidebar shades) as CSS variables
+// relative luminance (0=black, 1=white) — used to decide readable text color for a given background
+function luminance(hex){
+  hex = (hex||'#000000').replace('#','');
+  if(hex.length === 3) hex = hex.split('').map(c=>c+c).join('');
+  const chan = v => { v/=255; return v <= 0.03928 ? v/12.92 : Math.pow((v+0.055)/1.055, 2.4); };
+  const r = chan(parseInt(hex.substring(0,2),16));
+  const g = chan(parseInt(hex.substring(2,4),16));
+  const b = chan(parseInt(hex.substring(4,6),16));
+  return 0.2126*r + 0.7152*g + 0.0722*b;
+}
+
+// applies the user's chosen background color (with derived sidebar shades) as CSS variables,
+// and keeps sidebar text/dots readable no matter how light or dark that color is
 function applyTheme(){
   const bg = (state.settings && state.settings.bgColor) || '#624374';
+  const purpleDeep = shadeColor(bg, -0.24);
+  const purpleDeeper = shadeColor(bg, -0.4);
   const root = document.documentElement.style;
   root.setProperty('--purple', bg);
-  root.setProperty('--purple-deep', shadeColor(bg, -0.24));
-  root.setProperty('--purple-deeper', shadeColor(bg, -0.4));
+  root.setProperty('--purple-deep', purpleDeep);
+  root.setProperty('--purple-deeper', purpleDeeper);
+
+  // the sidebar's actual background is --purple-deep — pick light or dark text based on its luminance
+  if(luminance(purpleDeep) > 0.5){
+    root.setProperty('--text-onpurple', '#2c2038');
+    root.setProperty('--text-onpurple-dim', '#5c4f68');
+    root.setProperty('--purple-line', 'rgba(0,0,0,0.14)');
+    root.setProperty('--sidebar-accent', '#9c6f12');
+  } else {
+    root.setProperty('--text-onpurple', '#f5eefb');
+    root.setProperty('--text-onpurple-dim', '#cdb9dc');
+    root.setProperty('--purple-line', 'rgba(255,255,255,0.14)');
+    root.setProperty('--sidebar-accent', '#f2cd7e');
+  }
 }
 
 /* ---------------------------------------------------------
@@ -473,6 +501,8 @@ function renderHome(){
     saveState();
     render();
   });
+
+  requestAnimationFrame(renderCalendarEventBars);
 }
 
 /* =========================================================
@@ -832,7 +862,92 @@ function calendarHtml(year, month, opts){
             </div>`;
   }).join('');
 
-  return `<div class="cal-grid">${dow}${dayCells}</div>`;
+  return `<div class="cal-grid-outer">
+            <div class="cal-grid">${dow}${dayCells}</div>
+            ${opts.small ? '' : `<div class="cal-bars-layer" id="calBarsLayer"></div>`}
+          </div>`;
+}
+
+// positions colored banners across the days a multi-day (non-recurring) event spans —
+// e.g. a retreat running Sept 26-27 gets one continuous bar instead of two separate dots
+function renderCalendarEventBars(){
+  const layer = document.getElementById('calBarsLayer');
+  if(!layer) return;
+  const outer = layer.parentElement;
+  const grid = outer.querySelector('.cal-grid');
+  const dayEls = grid ? Array.from(grid.querySelectorAll('.cal-day')) : [];
+  layer.innerHTML = '';
+  if(!dayEls.length) return;
+
+  const outerRect = outer.getBoundingClientRect();
+  const dateIndex = new Map();
+  dayEls.forEach((el, i) => dateIndex.set(el.dataset.date, i));
+  const gridStart = dayEls[0].dataset.date;
+  const gridEnd = dayEls[dayEls.length - 1].dataset.date;
+
+  const spanning = state.events.filter(e =>
+    e.recurrence === 'none' && e.endDate && e.endDate !== e.date &&
+    e.endDate >= gridStart && e.date <= gridEnd
+  );
+
+  // break each event into one segment per calendar row it touches
+  const segments = [];
+  spanning.forEach(e => {
+    const segEnd = e.endDate < gridEnd ? e.endDate : gridEnd;
+    let cur = e.date > gridStart ? e.date : gridStart;
+    while(cur <= segEnd){
+      const idx = dateIndex.get(cur);
+      const row = Math.floor(idx / 7);
+      const colStart = idx % 7;
+      let colEnd = colStart;
+      let runEnd = cur;
+      while(true){
+        const next = addDays(runEnd, 1);
+        if(next > segEnd) break;
+        const nIdx = dateIndex.get(next);
+        if(nIdx === undefined || Math.floor(nIdx / 7) !== row) break;
+        runEnd = next; colEnd = nIdx % 7;
+      }
+      segments.push({ event: e, row, colStart, colEnd, isTrueStart: cur === e.date, isTrueEnd: runEnd === e.endDate });
+      cur = addDays(runEnd, 1);
+    }
+  });
+
+  // stack segments that overlap within the same row into separate lanes
+  const lanesByRow = {};
+  segments.sort((a, b) => (a.event.date + a.event.id).localeCompare(b.event.date + b.event.id));
+  segments.forEach(seg => {
+    const lanes = lanesByRow[seg.row] || (lanesByRow[seg.row] = []);
+    let lane = lanes.findIndex(ranges => ranges.every(r => seg.colEnd < r[0] || seg.colStart > r[1]));
+    if(lane === -1){ lane = lanes.length; lanes.push([]); }
+    lanes[lane].push([seg.colStart, seg.colEnd]);
+    seg.lane = lane;
+  });
+
+  const BAR_H = 15, BAR_GAP = 2;
+  segments.forEach(seg => {
+    const { event: e, row, colStart, colEnd, lane, isTrueStart, isTrueEnd } = seg;
+    const startEl = dayEls[row * 7 + colStart];
+    const endEl = dayEls[row * 7 + colEnd];
+    const daynumEl = startEl.querySelector('.cal-daynum');
+    const startRect = startEl.getBoundingClientRect();
+    const endRect = endEl.getBoundingClientRect();
+    const numRect = daynumEl.getBoundingClientRect();
+    const color = (e.orgId && getOrg(e.orgId)) ? getOrg(e.orgId).color : '#e3a63f';
+
+    const bar = document.createElement('div');
+    bar.className = 'cal-bar';
+    bar.title = e.title;
+    bar.textContent = e.title;
+    bar.style.left = (startRect.left - outerRect.left + 2) + 'px';
+    bar.style.width = Math.max((endRect.right - startRect.left) - 4, 0) + 'px';
+    bar.style.top = (numRect.bottom - outerRect.top + 2 + lane * (BAR_H + BAR_GAP)) + 'px';
+    bar.style.height = BAR_H + 'px';
+    bar.style.background = color;
+    bar.style.borderTopLeftRadius = bar.style.borderBottomLeftRadius = isTrueStart ? '6px' : '0';
+    bar.style.borderTopRightRadius = bar.style.borderBottomRightRadius = isTrueEnd ? '6px' : '0';
+    layer.appendChild(bar);
+  });
 }
 
 // builds the little colored dots under a calendar day, grouped into:
@@ -859,7 +974,11 @@ function dotsHtml(dateStr, opts){
 
   const br = [];
   const evColors = new Set();
-  eventsOn(dateStr).forEach(e => evColors.add(e.orgId && getOrg(e.orgId) ? getOrg(e.orgId).color : '#e3a63f'));
+  eventsOn(dateStr).forEach(e => {
+    const isSpan = e.recurrence === 'none' && e.endDate && e.endDate !== e.date;
+    if(isSpan && !opts.small) return; // shown as a spanning bar on the big calendar instead of a dot
+    evColors.add(e.orgId && getOrg(e.orgId) ? getOrg(e.orgId).color : '#e3a63f');
+  });
   evColors.forEach(color => br.push(`<span class="cal-dot" style="background:${color}"></span>`));
 
   return {
@@ -1795,6 +1914,8 @@ document.getElementById('ctxDelete').addEventListener('click', () => {
 });
 
 document.getElementById('homeNavBtn').addEventListener('click', () => { ui.view='home'; render(); });
+document.getElementById('brandHomeBtn').addEventListener('click', () => { ui.view='home'; render(); });
+window.addEventListener('resize', () => { if(ui.view === 'home') requestAnimationFrame(renderCalendarEventBars); });
 document.getElementById('addClassBtn').addEventListener('click', () => { ui.addingClass = true; render(); });
 document.getElementById('settingsBtn').addEventListener('click', openSettingsModal);
 
