@@ -209,6 +209,48 @@ function formatTime(t){
   return `${h}:${mStr} ${ampm}`;
 }
 
+// hex -> {h:0-360, s:0-1, l:0-1}
+function hexToHsl(hex){
+  hex = (hex||'#624374').replace('#','');
+  if(hex.length === 3) hex = hex.split('').map(c=>c+c).join('');
+  const r = parseInt(hex.substring(0,2),16)/255;
+  const g = parseInt(hex.substring(2,4),16)/255;
+  const b = parseInt(hex.substring(4,6),16)/255;
+  const max = Math.max(r,g,b), min = Math.min(r,g,b);
+  let h, s, l = (max+min)/2;
+  if(max === min){ h = 0; s = 0; }
+  else {
+    const d = max-min;
+    s = l > 0.5 ? d/(2-max-min) : d/(max+min);
+    switch(max){
+      case r: h = (g-b)/d + (g<b?6:0); break;
+      case g: h = (b-r)/d + 2; break;
+      default: h = (r-g)/d + 4;
+    }
+    h *= 60;
+  }
+  return { h, s, l };
+}
+
+// {h,s,l} -> hex
+function hslToHex(h, s, l){
+  h = ((h % 360) + 360) % 360;
+  s = Math.max(0, Math.min(1, s));
+  l = Math.max(0, Math.min(1, l));
+  const c = (1 - Math.abs(2*l - 1)) * s;
+  const x = c * (1 - Math.abs((h/60) % 2 - 1));
+  const m = l - c/2;
+  let r=0, g=0, b=0;
+  if(h < 60){ r=c; g=x; b=0; }
+  else if(h < 120){ r=x; g=c; b=0; }
+  else if(h < 180){ r=0; g=c; b=x; }
+  else if(h < 240){ r=0; g=x; b=c; }
+  else if(h < 300){ r=x; g=0; b=c; }
+  else { r=c; g=0; b=x; }
+  const toHex = v => Math.round((v+m)*255).toString(16).padStart(2,'0');
+  return '#' + toHex(r)+toHex(g)+toHex(b);
+}
+
 // lightens (positive percent) or darkens (negative percent) a hex color
 function shadeColor(hex, percent){
   hex = (hex||'#624374').replace('#','');
@@ -221,40 +263,34 @@ function shadeColor(hex, percent){
   return '#' + [r,g,b].map(x => x.toString(16).padStart(2,'0')).join('');
 }
 
-// relative luminance (0=black, 1=white) — used to decide readable text color for a given background
-function luminance(hex){
-  hex = (hex||'#000000').replace('#','');
-  if(hex.length === 3) hex = hex.split('').map(c=>c+c).join('');
-  const chan = v => { v/=255; return v <= 0.03928 ? v/12.92 : Math.pow((v+0.055)/1.055, 2.4); };
-  const r = chan(parseInt(hex.substring(0,2),16));
-  const g = chan(parseInt(hex.substring(2,4),16));
-  const b = chan(parseInt(hex.substring(4,6),16));
-  return 0.2126*r + 0.7152*g + 0.0722*b;
-}
-
 // applies the user's chosen background color (with derived sidebar shades) as CSS variables,
-// and keeps sidebar text/dots readable no matter how light or dark that color is
+// keeping every bit of sidebar/page text readable no matter how light or dark that color is
 function applyTheme(){
   const bg = (state.settings && state.settings.bgColor) || '#624374';
+  const { h, s, l } = hexToHsl(bg);
   const purpleDeep = shadeColor(bg, -0.24);
   const purpleDeeper = shadeColor(bg, -0.4);
+  const isLight = l >= 0.75; // matches the 75% lightness cutoff
+
   const root = document.documentElement.style;
   root.setProperty('--purple', bg);
   root.setProperty('--purple-deep', purpleDeep);
   root.setProperty('--purple-deeper', purpleDeeper);
+  root.setProperty('--purple-line', isLight ? 'rgba(0,0,0,0.14)' : 'rgba(255,255,255,0.14)');
 
-  // the sidebar's actual background is --purple-deep — pick light or dark text based on its luminance
-  if(luminance(purpleDeep) > 0.5){
-    root.setProperty('--text-onpurple', '#2c2038');
-    root.setProperty('--text-onpurple-dim', '#5c4f68');
-    root.setProperty('--purple-line', 'rgba(0,0,0,0.14)');
-    root.setProperty('--sidebar-accent', '#9c6f12');
-  } else {
-    root.setProperty('--text-onpurple', '#f5eefb');
-    root.setProperty('--text-onpurple-dim', '#cdb9dc');
-    root.setProperty('--purple-line', 'rgba(255,255,255,0.14)');
-    root.setProperty('--sidebar-accent', '#f2cd7e');
-  }
+  // plain title text ("Home", page headers): flips to solid black once the background is light (L >= 75%)
+  root.setProperty('--text-onpurple', isLight ? '#1c1420' : '#ffffff');
+
+  // "same hue" text (page subtitle + the class list): keeps the background's own hue, just pushed
+  // lighter or darker (whichever contrasts) so it never turns into an unrelated color
+  const dimColor = isLight
+    ? hslToHex(h, s, Math.max(0.16, l - 0.45))   // light bg -> darker version of that hue
+    : hslToHex(h, s, Math.min(0.88, l + 0.45));  // dark bg -> lighter version of that hue
+  root.setProperty('--text-onpurple-dim', dimColor);
+
+  // logo: complementary hue of the chosen background; falls back to the default purple for greys/white/black
+  const logoColor = s < 0.05 ? '#624374' : hslToHex(h + 180, Math.max(s, 0.55), 0.5);
+  root.setProperty('--sidebar-accent', logoColor);
 }
 
 /* ---------------------------------------------------------
@@ -317,8 +353,8 @@ const ORG_COLOR_PALETTE = ['#e3a63f','#5b8fd1','#d1495b','#4c9a5b','#9c7fb3','#3
 
 function renderSidebar(){
   const list = document.getElementById('classNavList');
-  const homeBtn = document.getElementById('homeNavBtn');
-  homeBtn.classList.toggle('active', ui.view === 'home');
+  const brandBtn = document.getElementById('brandHomeBtn');
+  if(brandBtn) brandBtn.classList.toggle('active', ui.view === 'home');
 
   let rowsHtml = state.classes.map(c => {
     if(ui.renamingClassId === c.id){
@@ -1913,7 +1949,6 @@ document.getElementById('ctxDelete').addEventListener('click', () => {
   render();
 });
 
-document.getElementById('homeNavBtn').addEventListener('click', () => { ui.view='home'; render(); });
 document.getElementById('brandHomeBtn').addEventListener('click', () => { ui.view='home'; render(); });
 window.addEventListener('resize', () => { if(ui.view === 'home') requestAnimationFrame(renderCalendarEventBars); });
 document.getElementById('addClassBtn').addEventListener('click', () => { ui.addingClass = true; render(); });

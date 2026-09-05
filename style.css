@@ -118,7 +118,7 @@ a{ color: var(--gold); }
   font-size: 21px;
   font-weight: 700;
   letter-spacing: 0.2px;
-  color: var(--gold-soft);
+  color: var(--sidebar-accent);
 }
 .brand-mark-btn{
   background: none;
@@ -130,6 +130,7 @@ a{ color: var(--gold); }
   text-align: left;
 }
 .brand-mark-btn:hover{ color: var(--gold); }
+.brand-mark-btn.active{ color: var(--gold); }
 
 .nav-list{
   display: flex;
@@ -198,7 +199,7 @@ a{ color: var(--gold); }
 .page-header{
   margin-bottom: 22px;
 }
-.page-header h1{ font-size: 30px; color: #fff; }
+.page-header h1{ font-size: 30px; color: var(--text-onpurple); }
 .page-header .sub{ color: var(--text-onpurple-dim); font-size: 14.5px; }
 
 /* =========================================================
