@@ -66,6 +66,8 @@ function normalizeEvent(e){
   if(!e.days) e.days = [false,false,false,false,false,false,false];
   if(e.orgId === undefined) e.orgId = null;
   if(!e.endDate) e.endDate = e.date;
+  if(e.time === undefined) e.time = '';
+  if(e.endTime === undefined) e.endTime = '';
   return e;
 }
 
@@ -239,6 +241,10 @@ function classColorFor(classId){ const c = getClass(classId); return (c && c.col
 function meetingTimeLabel(m){
   if(!m.time) return '';
   return m.endTime ? `${formatTime(m.time)}\u2013${formatTime(m.endTime)}` : formatTime(m.time);
+}
+function eventTimeLabel(e){
+  if(!e.time) return '';
+  return e.endTime ? `${formatTime(e.time)}\u2013${formatTime(e.endTime)}` : formatTime(e.time);
 }
 
 function todosDueOn(dateStr){ return state.todos.filter(t => t.dueDate === dateStr); }
@@ -427,7 +433,7 @@ function renderHome(){
           <div class="today-list">
             ${dueToday.length===0 && evToday.length===0 ? `<div class="empty-note">Nothing due today.</div>` : ''}
             ${dueToday.map(t => `<div class="row">📌 ${escapeHtml(t.text)} ${t.classId ? `<span class="row-tag">— ${escapeHtml(getClass(t.classId)?.name||'')}</span>`:''}</div>`).join('')}
-            ${evToday.map(e => `<div class="row">🎉 ${escapeHtml(e.title)}</div>`).join('')}
+            ${evToday.map(e => `<div class="row">🎉 ${escapeHtml(e.title)} ${eventTimeLabel(e) ? `<span class="row-tag">${eventTimeLabel(e)}</span>` : ''}</div>`).join('')}
           </div>
         </div>
         <div class="today-col">
@@ -877,12 +883,16 @@ function openDayModal(dateStr){
     <div class="day-modal-section">
       <h4>Events</h4>
       <div class="day-modal-list">
-        ${evs.length ? evs.map(e => { const org = e.orgId ? getOrg(e.orgId) : null; return `<div class="row" style="background:#faf8fc;border:1px solid #ede6f2;border-radius:10px;padding:8px 10px;">
+        ${evs.length ? evs.map(e => { const org = e.orgId ? getOrg(e.orgId) : null; const timeLabel = eventTimeLabel(e); return `<div class="row" style="background:#faf8fc;border:1px solid #ede6f2;border-radius:10px;padding:8px 10px;">
           <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${org?org.color:'#e3a63f'};margin-right:6px;"></span>${escapeHtml(e.title)}
+          ${timeLabel ? `<span class="row-tag">· ${timeLabel}</span>` : ''}
           ${org ? `<span class="row-tag">— ${escapeHtml(org.name)}</span>` : ''}
           ${e.recurrence && e.recurrence!=='none' ? `<span class="row-tag">· ${e.recurrence==='weekly'?'Weekly':e.recurrence==='biweekly'?'Biweekly':'Monthly'} until ${niceDate(e.endDate)}</span>` : ''}
           ${(!e.recurrence || e.recurrence==='none') && e.endDate && e.endDate!==e.date ? `<span class="row-tag">· through ${niceDate(e.endDate)}</span>` : ''}
-          <button class="icon-btn" style="float:right;color:var(--red);" data-action="delete-event" data-id="${e.id}" data-date="${dateStr}">✕</button></div>`; }).join('') : `<div class="empty-note">No events.</div>`}
+          <span style="float:right;display:flex;gap:2px;">
+            <button class="icon-btn" data-action="edit-event" data-id="${e.id}" data-date="${dateStr}" title="Edit">✏️</button>
+            <button class="icon-btn" style="color:var(--red);" data-action="delete-event" data-id="${e.id}" data-date="${dateStr}" title="Delete">✕</button>
+          </span></div>`; }).join('') : `<div class="empty-note">No events.</div>`}
       </div>
     </div>
 
@@ -1223,24 +1233,34 @@ function openEditQuizModal(quizId){
 }
 
 /* =========================================================
-   ADD EVENT MODAL
+   ADD / EDIT EVENT MODAL
    supports: organization/group (with color, add/rename/delete),
-   and recurrence (weekly / biweekly / monthly + day-of-week)
+   recurrence (weekly / biweekly / monthly + day-of-week),
+   an optional time range, and — when editing — delete.
    ========================================================= */
-function openAddEventModal(prefillDate, pos){
-  const initialDate = prefillDate || todayStr();
-  const defaultEndDate = addMonthsToDateStr(initialDate, 4);
-  let selectedOrgId = null;
+function openAddEventModal(prefillDate, pos){ openEventModal(null, prefillDate, pos); }
+function openEditEventModal(eventId, refreshDate){
+  const existing = state.events.find(x => x.id === eventId);
+  if(!existing) return;
+  openEventModal(existing, null, null, refreshDate);
+}
+
+function openEventModal(existingEvent, prefillDate, pos, refreshDate){
+  const isEdit = !!existingEvent;
+  const initialDate = isEdit ? existingEvent.date : (prefillDate || todayStr());
+  const defaultEndDate = isEdit ? (existingEvent.endDate || initialDate) : addMonthsToDateStr(initialDate, 4);
+  let selectedOrgId = isEdit ? existingEvent.orgId : null;
   let renamingOrgId = null;
-  let selectedDays = [false,false,false,false,false,false,false];
-  selectedDays[parseDateStr(initialDate).getDay()] = true;
+  let selectedDays = isEdit && existingEvent.days ? [...existingEvent.days] : [false,false,false,false,false,false,false];
+  if(!isEdit) selectedDays[parseDateStr(initialDate).getDay()] = true;
+  const recurrenceOpen = isEdit && (existingEvent.recurrence === 'weekly' || existingEvent.recurrence === 'biweekly');
 
   showModal(`
-    <h3>Add an event</h3>
+    <h3>${isEdit ? 'Edit event' : 'Add an event'}</h3>
     <form id="addEventForm">
       <div class="form-row">
         <label>Title</label>
-        <input type="text" name="title" placeholder="e.g. GBM, Retreat, Food Fest" required>
+        <input type="text" name="title" placeholder="e.g. GBM, Retreat, Food Fest" value="${isEdit?escapeHtml(existingEvent.title):''}" required>
       </div>
       <div class="form-row">
         <label>Start date</label>
@@ -1249,6 +1269,14 @@ function openAddEventModal(prefillDate, pos){
       <div class="form-row">
         <label>End date</label>
         <input type="date" name="endDate" value="${defaultEndDate}" min="${initialDate}">
+      </div>
+      <div class="form-row">
+        <label>Time (optional)</label>
+        <div class="time-range">
+          <input type="time" name="time" value="${isEdit?escapeHtml(existingEvent.time||''):''}">
+          <span class="time-range-sep">to</span>
+          <input type="time" name="endTime" value="${isEdit?escapeHtml(existingEvent.endTime||''):''}">
+        </div>
       </div>
 
       <div class="form-row">
@@ -1268,13 +1296,13 @@ function openAddEventModal(prefillDate, pos){
       <div class="form-row">
         <label>Repeats</label>
         <select id="eventRecurrenceSelect">
-          <option value="none">Does not repeat</option>
-          <option value="weekly">Weekly</option>
-          <option value="biweekly">Every 2 weeks</option>
-          <option value="monthly">Monthly (same date)</option>
+          <option value="none" ${!isEdit || existingEvent.recurrence==='none' ? 'selected':''}>Does not repeat</option>
+          <option value="weekly" ${isEdit && existingEvent.recurrence==='weekly' ? 'selected':''}>Weekly</option>
+          <option value="biweekly" ${isEdit && existingEvent.recurrence==='biweekly' ? 'selected':''}>Every 2 weeks</option>
+          <option value="monthly" ${isEdit && existingEvent.recurrence==='monthly' ? 'selected':''}>Monthly (same date)</option>
         </select>
       </div>
-      <div class="form-row" id="eventDaysRow" style="display:none;">
+      <div class="form-row" id="eventDaysRow" style="display:${recurrenceOpen ? '' : 'none'};">
         <label>Repeat on</label>
         <div class="days-row" id="eventDaysChips">
           ${DOW_LABELS.map((l,d)=>`<button type="button" class="day-chip ${selectedDays[d]?'on':''}" data-day="${d}">${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d]}</button>`).join('')}
@@ -1282,8 +1310,9 @@ function openAddEventModal(prefillDate, pos){
       </div>
 
       <div class="modal-actions">
+        ${isEdit ? `<button type="button" class="btn ghost" id="deleteEventBtn" style="color:var(--red);border-color:#f3d7db;margin-right:auto;">🗑 Delete</button>` : ''}
         <button type="button" class="btn ghost" data-action="close-modal">Cancel</button>
-        <button type="submit" class="btn gold">Add event</button>
+        <button type="submit" class="btn gold">${isEdit ? 'Save' : 'Add event'}</button>
       </div>
     </form>
   `, pos);
@@ -1345,6 +1374,7 @@ function openAddEventModal(prefillDate, pos){
   }
 
   renderOrgManager();
+  syncOrgSelect();
 
   // keep "End date" defaulting to 4 months after "Start date" until the user edits it themselves
   const startInput = document.querySelector('#addEventForm input[name="date"]');
@@ -1390,23 +1420,42 @@ function openAddEventModal(prefillDate, pos){
     });
   });
 
+  function afterSave(){
+    saveState();
+    closeModal();
+    render();
+    if(refreshDate) openDayModal(refreshDate); // keep the day modal open, showing the updated event
+  }
+
   document.getElementById('addEventForm').addEventListener('submit', e => {
     e.preventDefault();
     const fd = new FormData(e.target);
     const recurrence = recurrenceSelect.value;
-    state.events.push(normalizeEvent({
-      id: uid(),
+    const payload = {
       title: fd.get('title').trim(),
       date: fd.get('date'),
       endDate: fd.get('endDate') || defaultEndDate,
+      time: fd.get('time') || '',
+      endTime: fd.get('endTime') || '',
       orgId: selectedOrgId,
       recurrence,
       days: (recurrence === 'weekly' || recurrence === 'biweekly') ? [...selectedDays] : [false,false,false,false,false,false,false],
-    }));
-    saveState();
-    closeModal();
-    render();
+    };
+    if(isEdit){
+      Object.assign(existingEvent, payload);
+      normalizeEvent(existingEvent);
+    } else {
+      state.events.push(normalizeEvent({ id: uid(), ...payload }));
+    }
+    afterSave();
   });
+
+  if(isEdit){
+    document.getElementById('deleteEventBtn').addEventListener('click', () => {
+      state.events = state.events.filter(x => x.id !== existingEvent.id);
+      afterSave();
+    });
+  }
 }
 
 /* =========================================================
@@ -1592,6 +1641,7 @@ document.addEventListener('click', e => {
       break;
 
     case 'open-add-event': openAddEventModal(); break;
+    case 'edit-event': openEditEventModal(el.dataset.id, el.dataset.date); break;
     case 'delete-event': {
       state.events = state.events.filter(x => x.id !== el.dataset.id);
       saveState();
