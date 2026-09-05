@@ -118,7 +118,7 @@ a{ color: var(--gold); }
   font-size: 21px;
   font-weight: 700;
   letter-spacing: 0.2px;
-  color: var(--sidebar-accent);
+  color: var(--gold);
 }
 .brand-mark-btn{
   background: none;

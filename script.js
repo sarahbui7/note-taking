@@ -11,7 +11,7 @@ const DOW_LABELS  = ['S','M','T','W','T','F','S'];
 /* ---------------------------------------------------------
    STATE
    --------------------------------------------------------- */
-const DEFAULT_SETTINGS = { notesCalSide: 'right', notesLineHeight: '1.6', notesParaSpacing: 'md', bgColor: '', timeFormat: '12' };
+const DEFAULT_SETTINGS = { notesCalSide: 'right', notesLineHeight: '1.6', notesParaSpacing: 'md', bgColor: '', accentColor: '', timeFormat: '12' };
 function defaultState(){
   return { classes: [], todos: [], quizzes: [], events: [], orgs: [], notes: [], settings: { ...DEFAULT_SETTINGS } };
 }
@@ -288,9 +288,15 @@ function applyTheme(){
     : hslToHex(h, s, Math.min(0.88, l + 0.45));  // dark bg -> lighter version of that hue
   root.setProperty('--text-onpurple-dim', dimColor);
 
-  // logo: complementary hue of the chosen background; falls back to the default purple for greys/white/black
-  const logoColor = s < 0.05 ? '#624374' : hslToHex(h + 180, Math.max(s, 0.55), 0.5);
-  root.setProperty('--sidebar-accent', logoColor);
+  // user-chosen accent color drives buttons, links, and the "NoteTaking" logo
+  const accent = (state.settings && state.settings.accentColor) || '#e3a63f';
+  root.setProperty('--gold', accent);
+  root.setProperty('--gold-soft', shadeColor(accent, 0.35));
+
+  // Settings/Sign out links (bottom-left) instead get the complementary hue of the background,
+  // falling back to the default purple for greys/white/black
+  const complementColor = s < 0.05 ? '#624374' : hslToHex(h + 180, Math.max(s, 0.55), 0.5);
+  root.setProperty('--sidebar-accent', complementColor);
 }
 
 /* ---------------------------------------------------------
@@ -1614,10 +1620,11 @@ function openEventModal(existingEvent, prefillDate, pos, refreshDate){
 }
 
 /* =========================================================
-   SETTINGS MODAL (background color + time format)
+   SETTINGS MODAL (background color + accent color + time format)
    ========================================================= */
 function openSettingsModal(){
   const bgColor = state.settings.bgColor || '#624374';
+  const accentColor = state.settings.accentColor || '#e3a63f';
   const timeFormat = state.settings.timeFormat || '12';
   showModal(`
     <h3>Settings</h3>
@@ -1625,6 +1632,10 @@ function openSettingsModal(){
       <div class="form-row">
         <label>Background color</label>
         <input type="color" name="bgColor" value="${bgColor}">
+      </div>
+      <div class="form-row">
+        <label>Accent color</label>
+        <input type="color" name="accentColor" value="${accentColor}">
       </div>
       <div class="form-row">
         <label>Time format</label>
@@ -1643,6 +1654,7 @@ function openSettingsModal(){
     e.preventDefault();
     const fd = new FormData(e.target);
     state.settings.bgColor = fd.get('bgColor');
+    state.settings.accentColor = fd.get('accentColor');
     state.settings.timeFormat = fd.get('timeFormat');
     saveState();
     applyTheme();
