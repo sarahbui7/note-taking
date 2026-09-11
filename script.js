@@ -42,6 +42,7 @@ function userDocRef(uid){ return db.collection('users').doc(uid); }
 function normalizeClass(c){
   // Migrates classes saved under the old fixed-field shape (website/discord/
   // lectureInfo/days) into the new flexible links[] / meetings[] arrays.
+  if(!c.type) c.type = 'class'; // 'class' | 'group' — groups swap quizzes/exams for events
   if(!c.links){
     c.links = [];
     if(c.website) c.links.push({ label: 'Website', url: c.website });
@@ -314,7 +315,16 @@ function getClass(id){ return state.classes.find(c => c.id === id); }
 function classTodos(classId){ return state.todos.filter(t => t.classId === classId); }
 function classQuizzes(classId){ return state.quizzes.filter(q => q.classId === classId).sort((a,b) => (a.date||'9999').localeCompare(b.date||'9999')); }
 function findNote(classId, dateStr){ return state.notes.find(n => n.classId === classId && n.date === dateStr); }
-function getOrg(id){ return state.orgs.find(o => o.id === id); }
+function getOrg(id){
+  if(!id) return null;
+  return state.orgs.find(o => o.id === id) || state.classes.find(c => c.id === id && c.type === 'group');
+}
+function isGroup(c){ return !!c && c.type === 'group'; }
+function stripHtml(html){
+  const d = document.createElement('div');
+  d.innerHTML = html || '';
+  return d.textContent || d.innerText || '';
+}
 function classColorFor(classId){ const c = getClass(classId); return (c && c.color) || '#9c8aa8'; }
 function meetingTimeLabel(m){
   if(!m.time) return '';
@@ -324,6 +334,14 @@ function eventTimeLabel(e){
   if(!e.time) return '';
   return e.endTime ? `${formatTime(e.time)}\u2013${formatTime(e.endTime)}` : formatTime(e.time);
 }
+
+// open items first (sorted by due date), completed items sink to the bottom (also by due date)
+function sortTodos(a, b){
+  if(a.done !== b.done) return a.done ? 1 : -1;
+  return (a.dueDate||'9999').localeCompare(b.dueDate||'9999');
+}
+
+function groupEvents(groupId){ return state.events.filter(e => e.orgId === groupId).sort((a,b) => (a.date||'9999').localeCompare(b.date||'9999')); }
 
 function todosDueOn(dateStr){ return state.todos.filter(t => t.dueDate === dateStr); }
 function quizzesOn(dateStr){ return state.quizzes.filter(q => q.date === dateStr); }
@@ -370,24 +388,39 @@ function renderSidebar(){
   const brandBtn = document.getElementById('brandHomeBtn');
   if(brandBtn) brandBtn.classList.toggle('active', ui.view === 'home');
 
-  let rowsHtml = state.classes.map(c => {
+  let rowsHtml = '';
+  let prevType = null;
+  state.classes.forEach(c => {
+    // a slight divider line wherever the list transitions between classes and groups
+    if(prevType !== null && c.type !== prevType){
+      rowsHtml += `<div class="class-nav-divider"></div>`;
+    }
+    prevType = c.type;
+
     if(ui.renamingClassId === c.id){
-      return `<div class="class-nav-row" data-id="${c.id}">
+      rowsHtml += `<div class="class-nav-row" data-id="${c.id}">
         <input type="text" class="inline-edit-input" id="renameInput" value="${escapeHtml(c.name)}">
       </div>`;
+      return;
     }
-    return `<div class="class-nav-row" draggable="true" data-id="${c.id}">
-      <button class="nav-item ${ui.view==='class' && ui.classId===c.id ? 'active':''}" data-action="go-class" data-id="${c.id}">
+    rowsHtml += `<div class="class-nav-row ${c.type==='group'?'is-group':''}" draggable="true" data-id="${c.id}">
+      <button class="nav-item ${ui.view==='class' && ui.classId===c.id ? 'active':''}" data-action="go-class" data-id="${c.id}" title="${c.type==='group'?'Group':'Class'}">
         <span class="nav-dot" style="background:${c.color||'#cdb9dc'}"></span>
         ${escapeHtml(c.name)}
       </button>
-      <button class="class-nav-del" title="Delete class" data-action="delete-class" data-id="${c.id}">✕</button>
+      <button class="class-nav-del" title="Delete" data-action="delete-class" data-id="${c.id}">✕</button>
     </div>`;
-  }).join('');
+  });
 
   if(ui.addingClass){
     rowsHtml += `<div class="class-nav-row adding">
-      <input type="text" class="inline-edit-input" id="newClassInput" placeholder="Class name...">
+      <div style="display:flex;flex-direction:column;gap:6px;width:100%;">
+        <input type="text" class="inline-edit-input" id="newClassInput" placeholder="Name...">
+        <div class="type-toggle" id="newClassTypeToggle">
+          <button type="button" class="type-pill on" data-type="class">Class</button>
+          <button type="button" class="type-pill" data-type="group">Group</button>
+        </div>
+      </div>
     </div>`;
   }
 
@@ -412,6 +445,17 @@ function renderSidebar(){
     });
     newEl.addEventListener('blur', () => commitNewClass(newEl.value));
   }
+
+  const newTypeToggle = document.getElementById('newClassTypeToggle');
+  if(newTypeToggle){
+    newTypeToggle.querySelectorAll('.type-pill').forEach(btn => {
+      btn.addEventListener('mousedown', e => e.preventDefault()); // keep the name input focused (don't trigger its blur-commit)
+      btn.addEventListener('click', () => {
+        newTypeToggle.querySelectorAll('.type-pill').forEach(b => b.classList.remove('on'));
+        btn.classList.add('on');
+      });
+    });
+  }
 }
 
 function commitRename(){
@@ -430,9 +474,12 @@ function commitNewClass(name){
   if(!ui.addingClass) return; // already committed (guards double-fire from blur+Enter)
   ui.addingClass = false;
   const trimmed = (name||'').trim();
+  const typeToggle = document.getElementById('newClassTypeToggle');
+  const onPill = typeToggle && typeToggle.querySelector('.type-pill.on');
+  const chosenType = onPill ? onPill.dataset.type : 'class';
   if(trimmed){
     const newClass = {
-      id: uid(), name: trimmed, subtitle:'',
+      id: uid(), name: trimmed, subtitle:'', type: chosenType,
       links: [], meetings: [],
       color: CLASS_COLOR_PALETTE[state.classes.length % CLASS_COLOR_PALETTE.length],
     };
@@ -461,7 +508,7 @@ function moveClass(draggedId, targetId){
 function renderHome(){
   const content = document.getElementById('content');
   const today = todayStr();
-  const allOpenTodos = state.todos.filter(t => !t.done).sort((a,b) => (a.dueDate||'9999').localeCompare(b.dueDate||'9999'));
+  const allOpenTodos = state.todos.filter(t => !t.done).sort(sortTodos);
 
   const dueToday = todosDueOn(today);
   const evToday = eventsOn(today);
@@ -568,8 +615,10 @@ function renderClass(classId){
 
   const collapsed = !!ui.collapsed[classId];
   const miniCollapsed = !!ui.miniCalCollapsed[classId];
-  const todos = classTodos(classId).sort((a,b) => (a.dueDate||'9999').localeCompare(b.dueDate||'9999'));
+  const todos = classTodos(classId).sort(sortTodos);
   const quizzes = classQuizzes(classId);
+  const grouped = isGroup(c);
+  const groupEvts = grouped ? groupEvents(classId) : [];
   const side = (state.settings.notesCalSide === 'left') ? 'flip' : '';
   const links = c.links || [];
   const meetings = c.meetings || [];
@@ -581,6 +630,7 @@ function renderClass(classId){
     <div class="page-header">
       <div style="display:flex;align-items:center;gap:10px;">
         <h1>${escapeHtml(c.name)}</h1>
+        ${grouped ? `<span class="group-badge">Group</span>` : ''}
         <button class="btn small ghost" style="color:#f5eefb;border-color:rgba(255,255,255,0.3);" data-action="edit-class" data-id="${classId}">⚙ Edit details</button>
       </div>
       <div class="sub">
@@ -606,6 +656,17 @@ function renderClass(classId){
         </div>
       </section>
 
+      ${grouped ? `
+      <section class="panel quiz-panel">
+        <div class="panel-header">
+          <h3>Events</h3>
+          <button class="btn small gold" type="button" data-action="open-add-group-event" data-classid="${classId}">+ Add</button>
+        </div>
+        <div class="quiz-list">
+          ${groupEvts.length ? groupEvts.map(e => groupEventItemHtml(e)).join('') : `<div class="empty-note">No events yet — add one above.</div>`}
+        </div>
+      </section>
+      ` : `
       <section class="panel quiz-panel">
         <div class="panel-header">
           <h3>Quizzes &amp; exams</h3>
@@ -615,6 +676,7 @@ function renderClass(classId){
           ${quizzes.length ? quizzes.map(q => quizItemHtml(q)).join('') : `<div class="empty-note">Nothing scheduled — add one above.</div>`}
         </div>
       </section>
+      `}
     </div>
 
     <!-- NOTES -->
@@ -674,10 +736,27 @@ function renderClass(classId){
           ${!miniCollapsed ? `<div id="miniCalWrap" class="mini-cal">
             ${calendarHtml(ui.classCal[classId].year, ui.classCal[classId].month, { small:true, todayStr: todayStr(), selected: ui.notesDate[classId], classId })}
           </div>` : ''}
+          ${!miniCollapsed ? `
+          <div class="notes-history">
+            <input type="text" id="notesSearchInput" class="notes-search-input" placeholder="Search notes...">
+            <div class="notes-history-label" id="notesHistoryLabel">Previous notes</div>
+            <div id="notesHistoryList" class="notes-history-list">${notesHistoryListHtml(classId, '')}</div>
+          </div>` : ''}
         </div>
       </div>
     </section>
   `;
+
+  // notes search — live-filters the "previous notes" list beneath the mini calendar
+  const notesSearchInput = document.getElementById('notesSearchInput');
+  if(notesSearchInput){
+    notesSearchInput.addEventListener('input', e => {
+      const q = e.target.value;
+      const label = document.getElementById('notesHistoryLabel');
+      if(label) label.textContent = q.trim() ? `Results for "${q.trim()}"` : 'Previous notes';
+      document.getElementById('notesHistoryList').innerHTML = notesHistoryListHtml(classId, q);
+    });
+  }
 
   // notes date picker
   document.getElementById('notesDateInput').addEventListener('change', e => {
@@ -769,8 +848,46 @@ function daysShort(days){
 
 function refreshMiniCal(classId){
   const wrap = document.getElementById('miniCalWrap');
-  if(!wrap) return;
-  wrap.innerHTML = calendarHtml(ui.classCal[classId].year, ui.classCal[classId].month, { small:true, todayStr: todayStr(), selected: ui.notesDate[classId], classId });
+  if(wrap) wrap.innerHTML = calendarHtml(ui.classCal[classId].year, ui.classCal[classId].month, { small:true, todayStr: todayStr(), selected: ui.notesDate[classId], classId });
+  const historyList = document.getElementById('notesHistoryList');
+  const searchInput = document.getElementById('notesSearchInput');
+  if(historyList) historyList.innerHTML = notesHistoryListHtml(classId, searchInput ? searchInput.value : '');
+}
+
+// grabs a short bit of text around the first match, for search results
+function snippetAround(text, q){
+  const idx = text.toLowerCase().indexOf(q.toLowerCase());
+  if(idx === -1) return text.slice(0, 70).trim();
+  const start = Math.max(0, idx - 20);
+  const end = Math.min(text.length, idx + q.length + 45);
+  return (start > 0 ? '…' : '') + text.slice(start, end).trim() + (end < text.length ? '…' : '');
+}
+
+// builds the "previous notes" list under the mini calendar — or, while searching, the matching days instead
+function notesHistoryListHtml(classId, query){
+  const q = (query || '').trim();
+  const currentDate = ui.notesDate[classId];
+  let entries = state.notes
+    .filter(n => n.classId === classId)
+    .map(n => ({ note: n, text: stripHtml(n.html).trim() }))
+    .filter(e => e.text !== '');
+
+  if(q){
+    entries = entries.filter(e => e.text.toLowerCase().includes(q.toLowerCase()));
+  } else {
+    entries = entries.filter(e => e.note.date !== currentDate);
+  }
+  entries.sort((a,b) => b.note.date.localeCompare(a.note.date));
+
+  if(!entries.length){
+    return `<div class="empty-note">${q ? 'No notes match that search.' : 'No previous notes yet.'}</div>`;
+  }
+  return entries.slice(0, 40).map(({note:n, text}) => `
+    <button type="button" class="notes-history-item ${n.date===currentDate?'active':''}" data-action="mini-cal-pick" data-classid="${classId}" data-date="${n.date}">
+      <span class="nh-date">${niceDate(n.date)}</span>
+      ${q ? `<span class="nh-snippet">${escapeHtml(snippetAround(text, q))}</span>` : ''}
+    </button>
+  `).join('');
 }
 
 /* =========================================================
@@ -811,6 +928,29 @@ function quizItemHtml(q, showClassTag){
         ${showClassTag && cls ? `<span class="t-class-tag" ${tagStyle}>${escapeHtml(cls.name)}</span>` : ''}
       </div>
       ${q.topics ? `<div class="q-topics">${escapeHtml(q.topics)}</div>` : ''}
+    </div>
+  `;
+}
+
+/* =========================================================
+   GROUP EVENT ITEM HTML (a group's "Events" panel, replacing Quizzes & exams)
+   ========================================================= */
+function groupEventItemHtml(e){
+  const timeLabel = eventTimeLabel(e);
+  const recurLabel = e.recurrence && e.recurrence !== 'none'
+    ? (e.recurrence === 'weekly' ? 'Weekly' : e.recurrence === 'biweekly' ? 'Biweekly' : 'Monthly')
+    : '';
+  const spanLabel = (!e.recurrence || e.recurrence === 'none') && e.endDate && e.endDate !== e.date
+    ? `through ${niceDate(e.endDate)}` : '';
+  return `
+    <div class="quiz-item event-item" data-id="${e.id}" data-action="edit-event" style="cursor:pointer;">
+      <div class="t-text">${escapeHtml(e.title)}</div>
+      <div class="t-meta">
+        ${e.date ? `<span>${niceDate(e.date)}</span>` : ''}
+        ${timeLabel ? `<span>${timeLabel}</span>` : ''}
+        ${recurLabel ? `<span>${recurLabel}${e.endDate ? ' until '+niceDate(e.endDate) : ''}</span>` : ''}
+        ${spanLabel ? `<span>${spanLabel}</span>` : ''}
+      </div>
     </div>
   `;
 }
@@ -1122,6 +1262,15 @@ function openEditClassModal(classId){
       </div>
 
       <div class="form-row">
+        <label>Type</label>
+        <div class="type-toggle-radio">
+          <label><input type="radio" name="type" value="class" ${c.type!=='group'?'checked':''}> Class</label>
+          <label><input type="radio" name="type" value="group" ${c.type==='group'?'checked':''}> Group</label>
+        </div>
+        <span class="hint" style="font-size:11.5px;color:var(--text-dim);">Classes get assignments &amp; exams. Groups get to-dos &amp; events, and can be picked as an event's organization.</span>
+      </div>
+
+      <div class="form-row">
         <label>Meeting times</label>
         <div id="meetingsContainer"></div>
         <button type="button" class="btn small ghost" id="addMeetingBtn">+ Add meeting time</button>
@@ -1210,6 +1359,7 @@ function openEditClassModal(classId){
     const fd = new FormData(e.target);
     c.name = fd.get('name').trim() || c.name;
     c.subtitle = fd.get('subtitle').trim();
+    c.type = fd.get('type') === 'group' ? 'group' : 'class';
     c.color = fd.get('color');
     c.meetings = editingMeetings
       .filter(m => (m.label && m.label.trim()) || m.days.some(Boolean) || m.time)
@@ -1407,18 +1557,31 @@ function openEditQuizModal(quizId){
    recurrence (weekly / biweekly / monthly + day-of-week),
    an optional time range, and — when editing — delete.
    ========================================================= */
-function openAddEventModal(prefillDate, pos){ openEventModal(null, prefillDate, pos); }
+function openAddEventModal(prefillDate, pos, prefillOrgId){ openEventModal(null, prefillDate, pos, null, prefillOrgId); }
 function openEditEventModal(eventId, refreshDate){
   const existing = state.events.find(x => x.id === eventId);
   if(!existing) return;
   openEventModal(existing, null, null, refreshDate);
 }
 
-function openEventModal(existingEvent, prefillDate, pos, refreshDate){
+// merges standalone orgs with group-type classes so groups show up as selectable organizations
+function orgSelectOptionsHtml(selectedId){
+  const groupClasses = state.classes.filter(c => c.type === 'group');
+  let html = `<option value="">No organization</option>`;
+  if(groupClasses.length){
+    html += `<optgroup label="Groups">${groupClasses.map(g => `<option value="${g.id}" ${g.id===selectedId?'selected':''}>${escapeHtml(g.name)}</option>`).join('')}</optgroup>`;
+  }
+  if(state.orgs.length){
+    html += `<optgroup label="Other">${state.orgs.map(o => `<option value="${o.id}" ${o.id===selectedId?'selected':''}>${escapeHtml(o.name)}</option>`).join('')}</optgroup>`;
+  }
+  return html;
+}
+
+function openEventModal(existingEvent, prefillDate, pos, refreshDate, prefillOrgId){
   const isEdit = !!existingEvent;
   const initialDate = isEdit ? existingEvent.date : (prefillDate || todayStr());
   const defaultEndDate = isEdit ? (existingEvent.endDate || initialDate) : addMonthsToDateStr(initialDate, 4);
-  let selectedOrgId = isEdit ? existingEvent.orgId : null;
+  let selectedOrgId = isEdit ? existingEvent.orgId : (prefillOrgId || null);
   let renamingOrgId = null;
   let selectedDays = isEdit && existingEvent.days ? [...existingEvent.days] : [false,false,false,false,false,false,false];
   if(!isEdit) selectedDays[parseDateStr(initialDate).getDay()] = true;
@@ -1451,8 +1614,7 @@ function openEventModal(existingEvent, prefillDate, pos, refreshDate){
       <div class="form-row">
         <label>Organization / group</label>
         <select id="eventOrgSelect">
-          <option value="">No organization</option>
-          ${state.orgs.map(o => `<option value="${o.id}">${escapeHtml(o.name)}</option>`).join('')}
+          ${orgSelectOptionsHtml(selectedOrgId)}
         </select>
         <div id="orgManager" class="org-manager"></div>
         <div class="org-row org-add-row">
@@ -1538,8 +1700,7 @@ function openEventModal(existingEvent, prefillDate, pos, refreshDate){
 
   function syncOrgSelect(){
     const sel = document.getElementById('eventOrgSelect');
-    sel.innerHTML = `<option value="">No organization</option>${state.orgs.map(o => `<option value="${o.id}">${escapeHtml(o.name)}</option>`).join('')}`;
-    sel.value = state.orgs.find(o => o.id === selectedOrgId) ? selectedOrgId : '';
+    sel.innerHTML = orgSelectOptionsHtml(selectedOrgId);
   }
 
   renderOrgManager();
@@ -1771,6 +1932,7 @@ document.addEventListener('click', e => {
   switch(action){
     case 'open-add-todo': openAddTodoModal(el.dataset.classid); break;
     case 'open-add-quiz': openAddQuizModal(el.dataset.classid); break;
+    case 'open-add-group-event': openAddEventModal(null, null, el.dataset.classid); break;
 
     case 'ctx-add-event':
       hideDayContextMenu();
