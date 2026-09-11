@@ -54,6 +54,10 @@ function normalizeClass(c){
       c.meetings.push({ label: c.lectureInfo || 'Class', days: c.days, time: '' });
     }
   }
+  c.meetings.forEach(m => {
+    if(!m.recurrence) m.recurrence = 'weekly';
+    if(m.date === undefined) m.date = '';
+  });
   return c;
 }
 
@@ -345,9 +349,34 @@ function groupEvents(groupId){ return state.events.filter(e => e.orgId === group
 
 function todosDueOn(dateStr){ return state.todos.filter(t => t.dueDate === dateStr); }
 function quizzesOn(dateStr){ return state.quizzes.filter(q => q.date === dateStr); }
-function classesMeetingOn(dateStr){
+
+// does a single meeting time occur on this date, given its recurrence (weekly / biweekly / monthly)?
+function meetingOccursOn(m, dateStr){
+  const recurrence = m.recurrence || 'weekly';
+  if(recurrence === 'monthly'){
+    if(!m.date) return false;
+    return parseDateStr(dateStr).getDate() === parseDateStr(m.date).getDate();
+  }
   const weekday = parseDateStr(dateStr).getDay();
-  return state.classes.filter(c => (c.meetings||[]).some(m => m.days && m.days[weekday]));
+  if(!m.days || !m.days[weekday]) return false;
+  if(recurrence === 'biweekly'){
+    if(!m.date) return true; // no anchor date set yet — fall back to plain weekly
+    return weeksBetween(m.date, dateStr) % 2 === 0;
+  }
+  return true; // weekly
+}
+
+// short "Weekly", "Biweekly", or "Monthly on the 15th" label for a meeting time
+function meetingRecurrenceLabel(m){
+  const recurrence = m.recurrence || 'weekly';
+  if(recurrence === 'monthly') return m.date ? `Monthly on the ${parseDateStr(m.date).getDate()}` : 'Monthly';
+  const days = daysShort(m.days);
+  if(recurrence === 'biweekly') return `Biweekly${days ? ' · '+days : ''}`;
+  return days;
+}
+
+function classesMeetingOn(dateStr){
+  return state.classes.filter(c => (c.meetings||[]).some(m => meetingOccursOn(m, dateStr)));
 }
 
 // weeks between two dates (used for biweekly recurrence)
@@ -376,6 +405,53 @@ function eventOccursOn(e, dateStr){
   }
 }
 function eventsOn(dateStr){ return state.events.filter(e => eventOccursOn(e, dateStr)); }
+
+// the next date (on/after fromDateStr) this event occurs, or null if it has none left
+function nextOccurrence(e, fromDateStr){
+  const cap = e.endDate || e.date;
+  if((e.recurrence||'none') === 'none'){
+    if(cap < fromDateStr) return null; // the whole date range is already in the past
+    return e.date >= fromDateStr ? e.date : fromDateStr; // upcoming, or already in progress today
+  }
+  let cursor = fromDateStr > e.date ? fromDateStr : e.date;
+  let guard = 0;
+  while(cursor <= cap && guard < 400){
+    if(eventOccursOn(e, cursor)) return cursor;
+    cursor = addDays(cursor, 1);
+    guard++;
+  }
+  return null;
+}
+
+// events sorted by their soonest upcoming occurrence, for the Home page's "Upcoming events" panel
+function upcomingEventsList(fromDateStr, limit){
+  const withNext = state.events
+    .map(e => ({ e, next: nextOccurrence(e, fromDateStr) }))
+    .filter(x => x.next);
+  withNext.sort((a,b) => a.next.localeCompare(b.next) || (a.e.time||'').localeCompare(b.e.time||''));
+  return limit ? withNext.slice(0, limit) : withNext;
+}
+
+function upcomingEventItemHtml(entry){
+  const e = entry.e;
+  const org = e.orgId ? getOrg(e.orgId) : null;
+  const tagStyle = org ? `style="background:${org.color}22;color:${org.color};border:1px solid ${org.color}55;"` : '';
+  const timeLabel = eventTimeLabel(e);
+  const recurLabel = e.recurrence && e.recurrence !== 'none'
+    ? (e.recurrence === 'weekly' ? 'Weekly' : e.recurrence === 'biweekly' ? 'Biweekly' : 'Monthly')
+    : '';
+  return `
+    <div class="quiz-item" data-id="${e.id}" data-action="edit-event" style="cursor:pointer;">
+      <div class="t-text">${escapeHtml(e.title)}</div>
+      <div class="t-meta">
+        <span>${niceDate(entry.next)}</span>
+        ${timeLabel ? `<span>${timeLabel}</span>` : ''}
+        ${recurLabel ? `<span>${recurLabel}</span>` : ''}
+        ${org ? `<span class="t-class-tag" ${tagStyle}>${escapeHtml(org.name)}</span>` : ''}
+      </div>
+    </div>
+  `;
+}
 
 /* =========================================================
    RENDER: SIDEBAR
@@ -514,6 +590,7 @@ function renderHome(){
   const evToday = eventsOn(today);
   const classesToday = classesMeetingOn(today);
   const allExams = [...state.quizzes].sort((a,b) => (a.date||'9999').localeCompare(b.date||'9999'));
+  const upcoming = upcomingEventsList(today, 8);
 
   content.innerHTML = `
     <div class="page-header">
@@ -549,6 +626,17 @@ function renderHome(){
       </section>
     </div>
 
+    <!-- UPCOMING EVENTS -->
+    <section class="panel">
+      <div class="panel-header">
+        <h3>Upcoming events</h3>
+        <span class="hint">from every group</span>
+      </div>
+      <div class="quiz-list">
+        ${upcoming.length ? upcoming.map(upcomingEventItemHtml).join('') : `<div class="empty-note">Nothing on the calendar yet.</div>`}
+      </div>
+    </section>
+
     <!-- TODAY -->
     <section class="panel">
       <div class="panel-header"><h3>Today — ${niceDate(today)}</h3></div>
@@ -565,8 +653,7 @@ function renderHome(){
           <h4>Classes today</h4>
           <div class="today-list">
             ${classesToday.length===0 ? `<div class="empty-note">No classes marked for today.</div>` : classesToday.map(c => {
-              const weekday = parseDateStr(today).getDay();
-              const todaysMeetings = (c.meetings||[]).filter(m => m.days && m.days[weekday]);
+              const todaysMeetings = (c.meetings||[]).filter(m => meetingOccursOn(m, today));
               const label = todaysMeetings.map(m => `${escapeHtml(m.label||'Class')}${meetingTimeLabel(m)?' '+escapeHtml(meetingTimeLabel(m)):''}`).join(', ');
               return `<div class="row">🎓 ${escapeHtml(c.name)} ${label?`<span class="row-tag">— ${label}</span>`:''}</div>`;
             }).join('')}
@@ -635,7 +722,7 @@ function renderClass(classId){
       </div>
       <div class="sub">
         ${c.subtitle ? escapeHtml(c.subtitle) : ''}
-        ${meetings.map(m => ` · ${escapeHtml(m.label||'Class')}${meetingTimeLabel(m) ? ' '+escapeHtml(meetingTimeLabel(m)) : ''} (${daysShort(m.days)})`).join('')}
+        ${meetings.map(m => ` · ${escapeHtml(m.label||'Class')}${meetingTimeLabel(m) ? ' '+escapeHtml(meetingTimeLabel(m)) : ''} (${meetingRecurrenceLabel(m)})`).join('')}
         ${links.map(l => ` · <a href="${escapeHtml(l.url)}" target="_blank" rel="noopener">${escapeHtml(l.label||'Link')}</a>`).join('')}
         ${!c.subtitle && meetings.length===0 && links.length===0 ? `<span style="opacity:.7;">No details yet — click "Edit details" to add meeting times and links.</span>` : ''}
       </div>
@@ -1215,17 +1302,20 @@ function openDayModal(dateStr){
     </div>
 
     <div class="day-modal-section">
-      <h4>Classes meeting</h4>
+      <h4>Groups</h4>
       <div class="day-modal-list">
         ${classesOn.length ? classesOn.map(c => {
-          const weekday = parseDateStr(dateStr).getDay();
-          const todaysMeetings = (c.meetings||[]).filter(m => m.days && m.days[weekday]);
-          const label = todaysMeetings.map(m => `${escapeHtml(m.label||'Class')}${meetingTimeLabel(m)?' '+escapeHtml(meetingTimeLabel(m)):''}`).join(', ');
-          return `<div class="row" style="background:#faf8fc;border:1px solid #ede6f2;border-radius:10px;padding:8px 10px;">
-          🎓 ${escapeHtml(c.name)} ${label?`<span class="row-tag">— ${label}</span>`:''}
-          <button class="btn small ghost" style="float:right;" data-action="go-class-notes" data-id="${c.id}" data-date="${dateStr}">Open notes</button>
+          const todaysMeetings = (c.meetings||[]).filter(m => meetingOccursOn(m, dateStr));
+          const labelText = todaysMeetings.map(m => m.label||'Meeting').join(', ');
+          const timeText = todaysMeetings.map(m => meetingTimeLabel(m)).filter(Boolean).join(', ');
+          return `<div class="row day-meeting-row" style="background:#faf8fc;border:1px solid #ede6f2;border-radius:10px;padding:8px 10px;">
+          <div class="day-meeting-row-top">
+            <span>🎓 ${escapeHtml(c.name)} ${labelText?`<span class="row-tag">— ${escapeHtml(labelText)}</span>`:''}</span>
+            ${timeText ? `<span class="day-meeting-time">${escapeHtml(timeText)}</span>` : ''}
+          </div>
+          <button class="btn small ghost" data-action="go-class-notes" data-id="${c.id}" data-date="${dateStr}">Open notes</button>
         </div>`;
-        }).join('') : `<div class="empty-note">No classes meet this day.</div>`}
+        }).join('') : `<div class="empty-note">Nothing meets this day.</div>`}
       </div>
     </div>
 
@@ -1247,7 +1337,7 @@ function openEditClassModal(classId){
   let editingLinks = (c.links||[]).map(l => ({...l}));
   if(editingLinks.length === 0) editingLinks.push({ label:'', url:'' });
   let editingMeetings = (c.meetings||[]).map(m => ({ ...m, days: [...(m.days||[false,false,false,false,false,false,false])] }));
-  if(editingMeetings.length === 0) editingMeetings.push({ label:'', days:[false,false,false,false,false,false,false], time:'', endTime:'' });
+  if(editingMeetings.length === 0) editingMeetings.push({ label:'', recurrence:'weekly', days:[false,false,false,false,false,false,false], date:'', time:'', endTime:'' });
 
   showModal(`
     <h3>Edit class details</h3>
@@ -1295,24 +1385,39 @@ function openEditClassModal(classId){
 
   function renderMeetingsRows(){
     const container = document.getElementById('meetingsContainer');
-    container.innerHTML = editingMeetings.map((m,i) => `
+    container.innerHTML = editingMeetings.map((m,i) => {
+      const recurrence = m.recurrence || 'weekly';
+      const showDays = recurrence !== 'monthly';
+      const showDate = recurrence === 'biweekly' || recurrence === 'monthly';
+      return `
       <div class="builder-row">
         <input type="text" class="meeting-label" data-idx="${i}" placeholder="e.g. Lecture, Lab" value="${escapeHtml(m.label||'')}">
-        <div class="days-row">
+        <select class="meeting-recurrence" data-idx="${i}">
+          <option value="weekly" ${recurrence==='weekly'?'selected':''}>Weekly</option>
+          <option value="biweekly" ${recurrence==='biweekly'?'selected':''}>Biweekly</option>
+          <option value="monthly" ${recurrence==='monthly'?'selected':''}>Monthly</option>
+        </select>
+        ${showDays ? `<div class="days-row">
           ${DOW_LABELS.map((l,d)=>`<button type="button" class="day-chip ${m.days[d]?'on':''}" data-idx="${i}" data-day="${d}">${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d]}</button>`).join('')}
-        </div>
+        </div>` : ''}
+        ${showDate ? `<input type="date" class="meeting-date" data-idx="${i}" value="${m.date||''}" title="${recurrence==='monthly'?'Which date each month it repeats on':'An on-week date, so we know which weeks it falls on'}">` : ''}
         <div class="time-range">
           <input type="time" class="meeting-time" data-idx="${i}" value="${escapeHtml(m.time||'')}">
           <span class="time-range-sep">to</span>
           <input type="time" class="meeting-endtime" data-idx="${i}" value="${escapeHtml(m.endTime||'')}">
         </div>
-        <span class="weekly-tag">Weekly</span>
         <button type="button" class="icon-btn remove-row-btn" data-idx="${i}" title="Remove">✕</button>
       </div>
-    `).join('');
+    `;
+    }).join('');
     container.querySelectorAll('.meeting-label').forEach(inp => inp.addEventListener('input', () => { editingMeetings[Number(inp.dataset.idx)].label = inp.value; }));
     container.querySelectorAll('.meeting-time').forEach(inp => inp.addEventListener('input', () => { editingMeetings[Number(inp.dataset.idx)].time = inp.value; }));
     container.querySelectorAll('.meeting-endtime').forEach(inp => inp.addEventListener('input', () => { editingMeetings[Number(inp.dataset.idx)].endTime = inp.value; }));
+    container.querySelectorAll('.meeting-date').forEach(inp => inp.addEventListener('input', () => { editingMeetings[Number(inp.dataset.idx)].date = inp.value; }));
+    container.querySelectorAll('.meeting-recurrence').forEach(sel => sel.addEventListener('change', () => {
+      editingMeetings[Number(sel.dataset.idx)].recurrence = sel.value;
+      renderMeetingsRows(); // recurrence choice changes whether day-chips or a date picker shows
+    }));
     container.querySelectorAll('.day-chip').forEach(chip => chip.addEventListener('click', () => {
       const i = Number(chip.dataset.idx), d = Number(chip.dataset.day);
       editingMeetings[i].days[d] = !editingMeetings[i].days[d];
@@ -1320,7 +1425,7 @@ function openEditClassModal(classId){
     }));
     container.querySelectorAll('.remove-row-btn').forEach(btn => btn.addEventListener('click', () => {
       editingMeetings.splice(Number(btn.dataset.idx), 1);
-      if(editingMeetings.length === 0) editingMeetings.push({ label:'', days:[false,false,false,false,false,false,false], time:'', endTime:'' });
+      if(editingMeetings.length === 0) editingMeetings.push({ label:'', recurrence:'weekly', days:[false,false,false,false,false,false,false], date:'', time:'', endTime:'' });
       renderMeetingsRows();
     }));
   }
@@ -1346,7 +1451,7 @@ function openEditClassModal(classId){
   renderMeetingsRows();
   renderLinksRows();
   document.getElementById('addMeetingBtn').addEventListener('click', () => {
-    editingMeetings.push({ label:'', days:[false,false,false,false,false,false,false], time:'', endTime:'' });
+    editingMeetings.push({ label:'', recurrence:'weekly', days:[false,false,false,false,false,false,false], date:'', time:'', endTime:'' });
     renderMeetingsRows();
   });
   document.getElementById('addLinkBtn').addEventListener('click', () => {
@@ -1362,8 +1467,8 @@ function openEditClassModal(classId){
     c.type = fd.get('type') === 'group' ? 'group' : 'class';
     c.color = fd.get('color');
     c.meetings = editingMeetings
-      .filter(m => (m.label && m.label.trim()) || m.days.some(Boolean) || m.time)
-      .map(m => ({ label: (m.label||'').trim(), days: m.days, time: m.time||'', endTime: m.endTime||'' }));
+      .filter(m => (m.label && m.label.trim()) || m.days.some(Boolean) || m.time || m.date)
+      .map(m => ({ label: (m.label||'').trim(), recurrence: m.recurrence||'weekly', days: m.days, date: m.date||'', time: m.time||'', endTime: m.endTime||'' }));
     c.links = editingLinks
       .filter(l => l.url && l.url.trim())
       .map(l => ({ label: (l.label||'').trim() || 'Link', url: l.url.trim() }));
