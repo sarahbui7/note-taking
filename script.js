@@ -615,27 +615,28 @@ function renderHome(){
         </div>
       </section>
 
-      <section class="panel quiz-panel">
-        <div class="panel-header">
-          <h3>Exams</h3>
-          <span class="hint">from every class</span>
-        </div>
-        <div class="quiz-list">
-          ${allExams.length ? allExams.map(q => quizItemHtml(q, true)).join('') : `<div class="empty-note">Nothing scheduled.</div>`}
-        </div>
-      </section>
-    </div>
+      <div class="quiz-col">
+        <section class="panel quiz-panel">
+          <div class="panel-header">
+            <h3>Exams</h3>
+            <span class="hint">from every class</span>
+          </div>
+          <div class="quiz-list">
+            ${allExams.length ? allExams.map(q => quizItemHtml(q, true)).join('') : `<div class="empty-note">Nothing scheduled.</div>`}
+          </div>
+        </section>
 
-    <!-- UPCOMING EVENTS -->
-    <section class="panel">
-      <div class="panel-header">
-        <h3>Upcoming events</h3>
-        <span class="hint">from every group</span>
+        <section class="panel quiz-panel">
+          <div class="panel-header">
+            <h3>Upcoming events</h3>
+            <span class="hint">from every group</span>
+          </div>
+          <div class="quiz-list">
+            ${upcoming.length ? upcoming.map(upcomingEventItemHtml).join('') : `<div class="empty-note">Nothing on the calendar yet.</div>`}
+          </div>
+        </section>
       </div>
-      <div class="quiz-list">
-        ${upcoming.length ? upcoming.map(upcomingEventItemHtml).join('') : `<div class="empty-note">Nothing on the calendar yet.</div>`}
-      </div>
-    </section>
+    </div>
 
     <!-- TODAY -->
     <section class="panel">

@@ -245,6 +245,13 @@ a{ color: var(--gold); }
 .todo-quiz-row .quiz-panel{ flex: 1; min-width: 240px; }
 .panel-header-actions{ display:flex; align-items:center; gap:6px; }
 
+/* right-hand column on Home: Exams stacked above Upcoming events */
+.quiz-col{
+  display:flex; flex-direction:column;
+  flex: 1; min-width: 240px;
+}
+.quiz-col .quiz-panel{ flex: none; min-width: 0; }
+
 /* =========================================================
    TO-DO LIST
    ========================================================= */
