@@ -834,3 +834,15 @@ a{ color: var(--gold); }
   #sidebar .class-nav-row.adding{ grid-row:1 / 3; width:180px; }
   #sidebar .inline-edit-input{ min-width:0; max-width:180px; }
 }
+
+/* Navigation scrollbars follow the selected background theme. */
+#sidebar .nav-list{
+  scrollbar-width:thin;
+  scrollbar-color:var(--purple) var(--purple-deep);
+}
+#sidebar .nav-list::-webkit-scrollbar{ width:8px; height:8px; }
+#sidebar .nav-list::-webkit-scrollbar-track{ background:var(--purple-deep); }
+#sidebar .nav-list::-webkit-scrollbar-thumb{ background:var(--purple); border:2px solid var(--purple-deep); border-radius:8px; }
+#sidebar .nav-list::-webkit-scrollbar-thumb:hover{ background:var(--text-onpurple-dim); }
+#sidebar .nav-list::-webkit-scrollbar-button{ display:none; }
+#sidebar .nav-list::-webkit-scrollbar-corner{ background:var(--purple-deep); }
