@@ -642,13 +642,8 @@ function renderHome(){
       <section class="panel todo-panel">
         <div class="panel-header">
           <h3>Tasks &amp; assignments</h3>
-          <span class="hint">from every class + general reminders</span>
+          <span class="hint">from every class</span>
         </div>
-        <form class="todo-add-row" id="homeTodoForm">
-          <input class="t-text" type="text" name="text" placeholder="Add a general reminder..." required>
-          <input class="t-date" type="date" name="dueDate">
-          <button class="btn gold" type="submit">Add</button>
-        </form>
         <div class="todo-list">
           ${allOpenTodos.length ? allOpenTodos.map(t => todoItemHtml(t, true)).join('') : `<div class="empty-note">Nothing pending — nice.</div>`}
         </div>
@@ -696,16 +691,6 @@ function renderHome(){
       <div id="homeCalWrap">${calendarHtml(ui.homeCal.year, ui.homeCal.month, { small:false, todayStr: today, weekDate: ui.homeCalView === 'week' ? ui.homeCalDate : null })}</div>
     </section>
   `;
-
-  document.getElementById('homeTodoForm').addEventListener('submit', e => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    const text = fd.get('text').trim();
-    if(!text) return;
-    state.todos.push({ id: uid(), classId: null, text, dueDate: fd.get('dueDate')||'', link:'', done:false });
-    saveState();
-    render();
-  });
 
   requestAnimationFrame(renderCalendarEventBars);
 }
