@@ -24,6 +24,8 @@ let ui = {
   collapsed: {},        // classId -> bool (todo panel collapsed)
   miniCalCollapsed: {},  // classId -> bool (mini-calendar collapsed)
   homeCal: currentMonthCursor(),
+  homeCalView: 'week',
+  homeCalDate: todayStr(),
   classCal: {},          // classId -> {year,month}
   notesDate: {},         // classId -> 'YYYY-MM-DD'
   addingClass: false,    // sidebar inline "new class" input showing
@@ -581,6 +583,15 @@ function moveClass(draggedId, targetId){
 /* =========================================================
    RENDER: HOME VIEW
    ========================================================= */
+function homeWeekTitle(){
+  const start = new Date(ui.homeCalDate + 'T12:00:00');
+  start.setDate(start.getDate() - start.getDay());
+  const end = new Date(start);
+  end.setDate(end.getDate() + 6);
+  const format = date => date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return format(start) + ' ? ' + format(end) + ', ' + end.getFullYear();
+}
+
 function renderHome(){
   const content = document.getElementById('content');
   const today = todayStr();
@@ -593,16 +604,44 @@ function renderHome(){
   const upcoming = upcomingEventsList(today, 8);
 
   content.innerHTML = `
-    <div class="page-header">
+    <div class="home-top-row">
+    <div class="page-header home-heading">
       <h1>Home</h1>
       <div class="sub">${niceDate(today)}</div>
     </div>
 
+    <!-- TODAY -->
+    <section class="panel home-today">
+      <div class="panel-header"><h3>Today — ${niceDate(today)}</h3></div>
+      <div class="today-grid">
+        <div class="today-col">
+          <h4>Due &amp; events</h4>
+          <div class="today-list">
+            ${dueToday.length===0 && evToday.length===0 ? `<div class="empty-note">Nothing due today.</div>` : ''}
+            ${dueToday.map(t => `<div class="row">📌 ${escapeHtml(t.text)} ${t.classId ? `<span class="row-tag">— ${escapeHtml(getClass(t.classId)?.name||'')}</span>`:''}</div>`).join('')}
+            ${evToday.map(e => `<div class="row">🎉 ${escapeHtml(e.title)} ${eventTimeLabel(e) ? `<span class="row-tag">${eventTimeLabel(e)}</span>` : ''}</div>`).join('')}
+          </div>
+        </div>
+        <div class="today-col">
+          <h4>Classes today</h4>
+          <div class="today-list">
+            ${classesToday.length===0 ? `<div class="empty-note">No classes marked for today.</div>` : classesToday.map(c => {
+              const todaysMeetings = (c.meetings||[]).filter(m => meetingOccursOn(m, today));
+              const label = todaysMeetings.map(m => `${escapeHtml(m.label||'Class')}${meetingTimeLabel(m)?' '+escapeHtml(meetingTimeLabel(m)):''}`).join(', ');
+              return `<div class="row">🎓 ${escapeHtml(c.name)} ${label?`<span class="row-tag">— ${label}</span>`:''}</div>`;
+            }).join('')}
+          </div>
+        </div>
+      </div>
+    </section>
+
+    </div>
+
     <!-- AGGREGATED TO-DO + EXAMS, side by side like the class page -->
-    <div class="todo-quiz-row">
+    <div class="todo-quiz-row home-overview">
       <section class="panel todo-panel">
         <div class="panel-header">
-          <h3>To-do</h3>
+          <h3>Tasks &amp; assignments</h3>
           <span class="hint">from every class + general reminders</span>
         </div>
         <form class="todo-add-row" id="homeTodoForm">
@@ -638,42 +677,23 @@ function renderHome(){
       </div>
     </div>
 
-    <!-- TODAY -->
-    <section class="panel">
-      <div class="panel-header"><h3>Today — ${niceDate(today)}</h3></div>
-      <div class="today-grid">
-        <div class="today-col">
-          <h4>Due &amp; events</h4>
-          <div class="today-list">
-            ${dueToday.length===0 && evToday.length===0 ? `<div class="empty-note">Nothing due today.</div>` : ''}
-            ${dueToday.map(t => `<div class="row">📌 ${escapeHtml(t.text)} ${t.classId ? `<span class="row-tag">— ${escapeHtml(getClass(t.classId)?.name||'')}</span>`:''}</div>`).join('')}
-            ${evToday.map(e => `<div class="row">🎉 ${escapeHtml(e.title)} ${eventTimeLabel(e) ? `<span class="row-tag">${eventTimeLabel(e)}</span>` : ''}</div>`).join('')}
-          </div>
-        </div>
-        <div class="today-col">
-          <h4>Classes today</h4>
-          <div class="today-list">
-            ${classesToday.length===0 ? `<div class="empty-note">No classes marked for today.</div>` : classesToday.map(c => {
-              const todaysMeetings = (c.meetings||[]).filter(m => meetingOccursOn(m, today));
-              const label = todaysMeetings.map(m => `${escapeHtml(m.label||'Class')}${meetingTimeLabel(m)?' '+escapeHtml(meetingTimeLabel(m)):''}`).join(', ');
-              return `<div class="row">🎓 ${escapeHtml(c.name)} ${label?`<span class="row-tag">— ${label}</span>`:''}</div>`;
-            }).join('')}
-          </div>
-        </div>
-      </div>
-    </section>
-
     <!-- MONTH CALENDAR -->
     <section class="panel">
       <div class="panel-header">
         <div class="cal-nav">
           <button class="icon-btn" data-action="home-cal-prev">←</button>
-          <div class="cal-title">${MONTH_NAMES[ui.homeCal.month]} ${ui.homeCal.year}</div>
+          <div class="cal-title">${ui.homeCalView === 'week' ? homeWeekTitle() : MONTH_NAMES[ui.homeCal.month] + ' ' + ui.homeCal.year}</div>
           <button class="icon-btn" data-action="home-cal-next">→</button>
         </div>
-        <button class="btn small ghost" data-action="open-add-event">+ Add event</button>
+        <div class="calendar-actions">
+          <div class="calendar-view-toggle" role="group" aria-label="Calendar view">
+            <button class="btn small ${ui.homeCalView === 'week' ? '' : 'ghost'}" data-action="home-cal-view" data-view="week" aria-pressed="${ui.homeCalView === 'week'}">Week</button>
+            <button class="btn small ${ui.homeCalView === 'month' ? '' : 'ghost'}" data-action="home-cal-view" data-view="month" aria-pressed="${ui.homeCalView === 'month'}">Month</button>
+          </div>
+          <button class="btn small ghost" data-action="open-add-event">+ Add event</button>
+        </div>
       </div>
-      <div id="homeCalWrap">${calendarHtml(ui.homeCal.year, ui.homeCal.month, { small:false, todayStr: today })}</div>
+      <div id="homeCalWrap">${calendarHtml(ui.homeCal.year, ui.homeCal.month, { small:false, todayStr: today, weekDate: ui.homeCalView === 'week' ? ui.homeCalDate : null })}</div>
     </section>
   `;
 
@@ -1117,6 +1137,17 @@ function calendarHtml(year, month, opts){
     cells.push({ dateStr: toDateStr(d), dayNum: d.getDate(), otherMonth: true });
   }
 
+  if(opts.weekDate){
+    const start = new Date(opts.weekDate + 'T12:00:00');
+    start.setDate(start.getDate() - start.getDay());
+    cells.length = 0;
+    for(let i=0; i<7; i++){
+      const date = new Date(start);
+      date.setDate(start.getDate() + i);
+      cells.push({ dateStr: toDateStr(date), dayNum: date.getDate(), otherMonth: false });
+    }
+  }
+
   const dow = DOW_LABELS.map(l => `<div class="cal-dow">${l}</div>`).join('');
 
   const dayCells = cells.map(cell => {
@@ -1141,7 +1172,7 @@ function calendarHtml(year, month, opts){
   }).join('');
 
   return `<div class="cal-grid-outer">
-            <div class="cal-grid">${dow}${dayCells}</div>
+            <div class="cal-grid ${opts.weekDate ? 'cal-week' : ''}">${dow}${dayCells}</div>
             ${opts.small ? '' : `<div class="cal-bars-layer" id="calBarsLayer"></div>`}
           </div>`;
 }
@@ -2115,14 +2146,26 @@ document.addEventListener('click', e => {
       render();
       break;
 
+    case 'home-cal-view':
+      ui.homeCalView = el.dataset.view;
+      render();
+      break;
     case 'home-cal-prev':
-      ui.homeCal.month--; if(ui.homeCal.month<0){ ui.homeCal.month=11; ui.homeCal.year--; }
+    case 'home-cal-next': {
+      const step = action === 'home-cal-prev' ? -1 : 1;
+      if(ui.homeCalView === 'week'){
+        const date = new Date(ui.homeCalDate + 'T12:00:00');
+        date.setDate(date.getDate() + step * 7);
+        ui.homeCalDate = toDateStr(date);
+        ui.homeCal = { year: date.getFullYear(), month: date.getMonth() };
+      } else {
+        const date = new Date(ui.homeCal.year, ui.homeCal.month + step, 1);
+        ui.homeCal = { year: date.getFullYear(), month: date.getMonth() };
+        ui.homeCalDate = toDateStr(date);
+      }
       render();
       break;
-    case 'home-cal-next':
-      ui.homeCal.month++; if(ui.homeCal.month>11){ ui.homeCal.month=0; ui.homeCal.year++; }
-      render();
-      break;
+    }
 
     case 'mini-cal-prev': {
       const cid = el.dataset.classid;

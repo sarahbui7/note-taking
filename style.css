@@ -766,3 +766,40 @@ a{ color: var(--gold); }
   #content{ padding: 24px 18px 60px 18px; }
   .notes-layout{ flex-direction: column; }
 }
+/* Compact Home dashboard keeps the calendar near the top. */
+.home-top-row{ display:flex; align-items:flex-start; gap:24px; margin-bottom:16px; }
+.home-heading{ flex:0 0 120px; margin-bottom:0; padding-top:8px; }
+.home-today{ flex:1; min-width:0; margin-bottom:0; padding:12px 16px; max-height:144px; overflow:auto; }
+.home-today .panel-header{ margin-bottom:8px; }
+.home-today .panel-header h3{ font-size:14px; }
+.home-today .today-grid{ gap:12px; }
+.home-today .today-col{ min-width:160px; }
+.home-today .today-col h4{ font-size:12px; margin-bottom:4px; }
+.home-today .today-list .row{ font-size:12px; padding:5px 8px; }
+.home-overview{ display:grid; grid-template-columns:minmax(0, 2fr) minmax(0, 1fr); gap:16px; height:300px; margin-bottom:16px; }
+.home-overview .panel{ padding:14px 16px; margin-bottom:0; min-width:0; min-height:0; display:flex; flex-direction:column; }
+.home-overview .quiz-col{ display:grid; grid-template-rows:minmax(0, 1fr) minmax(0, 1fr); gap:12px; min-width:0; min-height:0; }
+.home-overview .panel-header{ gap:8px; margin-bottom:8px; flex-shrink:0; flex-wrap:wrap; }
+.home-overview .panel-header h3{ font-size:15px; }
+.home-overview .panel-header .hint{ font-size:11px; }
+.home-overview .todo-add-row{ gap:6px; margin-bottom:8px; flex-shrink:0; }
+.home-overview .todo-add-row input{ font-size:12px; padding:6px 8px; min-width:0; }
+.home-overview .todo-add-row .t-date{ flex:0 1 125px; }
+.home-overview .btn{ font-size:12px; padding:6px 10px; }
+.home-overview .todo-list, .home-overview .quiz-list{ overflow:auto; min-height:0; flex:1; }
+.home-overview .todo-item, .home-overview .quiz-item{ padding:7px 9px; }
+.home-overview .t-text{ font-size:12.5px; }
+.home-overview .t-meta, .home-overview .q-topics, .home-overview .empty-note{ font-size:11.5px; }
+.calendar-actions, .calendar-view-toggle{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+#homeCalWrap .cal-week .cal-day{ aspect-ratio:auto; min-height:110px; }
+@media(max-width:600px){
+  .home-top-row{ flex-direction:column; gap:12px; }
+  .home-heading{ flex:auto; }
+  .home-today{ width:100%; box-sizing:border-box; }
+  .home-overview{ grid-template-columns:minmax(0, 1fr); height:auto; }
+  .home-overview > .todo-panel{ height:230px; }
+  .home-overview .quiz-col{ height:260px; }
+  .panel:has(#homeCalWrap) > .panel-header{ flex-wrap:wrap; gap:8px; }
+  .cal-nav{ gap:2px; }
+  #homeCalWrap .cal-week .cal-day{ min-height:90px; }
+}
